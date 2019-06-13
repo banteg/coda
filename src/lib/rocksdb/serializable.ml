@@ -124,10 +124,22 @@ module GADT = struct
       type t = Database.t
 
       let set_raw t ~(key : 'a Key.t) ~(data : Bigstring.t) : unit =
+        Printf.eprintf "WRITING LEN: %d HASH: %s\n%!" (Bigstring.length data)
+          Md5.(digest_bigstring data |> to_hex) ;
         Database.set t ~key:(bin_key_dump key) ~data
 
       let set t ~(key : 'a Key.t) ~(data : 'a) : unit =
-        set_raw t ~key ~data:(bin_data_dump key data)
+        Printf.eprintf "WRITING SERIALIZATION\n%!" ;
+        let bin_data = bin_data_dump key data in
+        let bin_key : 'a Bin_prot.Type_class.t = Key.binable_data_type key in
+        Printf.eprintf "DESERIALIZING\n%!" ;
+        let deserialized = bin_key.reader.read bin_data ~pos_ref:(ref 0) in
+        let writer = bin_key.writer in
+        let buf = Bin_prot.Common.create_buf (writer.size deserialized) in
+        Printf.eprintf "WRITING EXTRA SERIALIZATION\n%!" ;
+        ignore (writer.write buf ~pos:0 deserialized) ;
+        Printf.eprintf "EQ BUFFS: %B\n%!" (buf = bin_data) ;
+        set_raw t ~key ~data:bin_data
 
       let remove t ~(key : 'a Key.t) =
         Database.remove t ~key:(bin_key_dump key)
@@ -144,9 +156,17 @@ module GADT = struct
 
     let get t ~(key : 'a Key.t) =
       let open Option.Let_syntax in
+      Printf.eprintf "ABOUT TO READ FROM DB\n%!" ;
       let%map serialized_value = Database.get t ~key:(bin_key_dump key) in
+      Printf.eprintf "READING LEN: %d HASH: %s\n%!"
+        (Bigstring.length serialized_value)
+        Md5.(digest_bigstring serialized_value |> to_hex) ;
+      Printf.eprintf "GOT VALUE FROM DB, ABOUT GET BIN KEY\n%!" ;
       let bin_key = Key.binable_data_type key in
-      bin_key.reader.read serialized_value ~pos_ref:(ref 0)
+      Printf.eprintf "GOT BIN KEY, ABOUT TO READ VALUE\n%!" ;
+      let result = bin_key.reader.read serialized_value ~pos_ref:(ref 0) in
+      Printf.eprintf "READ VALUE, RETURNING\n%!" ;
+      result
 
     module Batch = struct
       include Make_Serializer (Database.Batch)
