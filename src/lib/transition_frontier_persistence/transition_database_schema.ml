@@ -33,8 +33,10 @@ module Make (Inputs : Transition_frontier.Inputs_intf) :
 
   let binable_data_type (type a) : a t -> a Bin_prot.Type_class.t = function
     | Transition _ ->
+        Printf.eprintf "BINABLE DATA TYPE FOR TRANSITION\n%!" ;
         [%bin_type_class: Data.Transition.t]
     | Root ->
+        Printf.eprintf "BINABLE DATA TYPE FOR ROOT\n%!" ;
         [%bin_type_class: Data.Root_data.t]
 
   (* HACK: a simple way to derive Bin_prot.Type_class.t for each case of a GADT *)
