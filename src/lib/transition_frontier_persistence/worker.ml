@@ -94,6 +94,18 @@ end = struct
         Transition_frontier.Diff.Mutant.hash ~logger acc_hash diff mutant
     | Update_root {root; scan_state; pending_coinbase} ->
         let new_root_data = (root, scan_state, pending_coinbase) in
+        let new_value_data =
+          Transition_frontier.Diff.Mutant.value_to_yojson diff
+            { Transition_frontier.Diff.Mutant.Root.Poly.root
+            ; scan_state
+            ; pending_coinbase }
+        in
+        Logger.trace t.logger ~module_:__MODULE__ ~location:__LOC__
+          ~metadata:
+            [ ( "diff_mutant"
+              , Transition_frontier.Diff.Mutant.key_to_yojson diff )
+            ; ("new_worker_value", new_value_data) ]
+          "About to handle mutant diff ****" ;
         let old_root_data =
           Logger.trace t.logger !"Getting old root data" ~module_:__MODULE__
             ~location:__LOC__ ;
