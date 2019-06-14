@@ -94,6 +94,10 @@ end = struct
         Transition_frontier.Diff.Mutant.hash ~logger acc_hash diff mutant
     | Update_root {root; scan_state; pending_coinbase} ->
         let new_root_data = (root, scan_state, pending_coinbase) in
+        Stdlib.Printf.eprintf "WRITING ROOT DATA: %s\n%!"
+          (Yojson.Safe.to_string
+             (Transition_frontier.Diff.Mutant.value_to_yojson diff
+                {root; scan_state; pending_coinbase})) ;
         let new_value_data =
           Transition_frontier.Diff.Mutant.value_to_yojson diff
             { Transition_frontier.Diff.Mutant.Root.Poly.root
@@ -113,22 +117,16 @@ end = struct
             Transition_storage.get t.transition_storage ~logger:t.logger
               ~location:__LOC__ Transition_storage.Schema.Root
           in
-          Stdlib.Printf.eprintf
-            !"READ ROOT DATA: %{sexp: State_hash.t * \
-              Inputs.Staged_ledger.Scan_state.t * Pending_coinbase.t}\n\
-              %!"
-            (root, scan_state, pending_coinbase) ;
           { Transition_frontier.Diff.Mutant.Root.Poly.root
           ; scan_state
           ; pending_coinbase }
         in
+        Stdlib.Printf.eprintf "READ ROOT DATA: %s\n%!"
+          (Yojson.Safe.to_string
+             (Transition_frontier.Diff.Mutant.value_to_yojson diff
+                old_root_data)) ;
         Logger.trace t.logger !"Setting old root data" ~module_:__MODULE__
           ~location:__LOC__ ;
-        Stdlib.Printf.eprintf
-          !"WRITING ROOT DATA: %{sexp: State_hash.t * \
-            Inputs.Staged_ledger.Scan_state.t * Pending_coinbase.t}\n\
-            %!"
-          new_root_data ;
         Transition_storage.set t.transition_storage ~key:Root
           ~data:new_root_data ;
         Logger.trace t.logger
