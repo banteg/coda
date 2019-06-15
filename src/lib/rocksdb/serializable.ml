@@ -128,17 +128,37 @@ module GADT = struct
           Md5.(digest_bigstring data |> to_hex) ;
         Database.set t ~key:(bin_key_dump key) ~data
 
+      let assert_eq_buf b1 b2 =
+        let open Bigarray.Array1 in
+        let len1 = dim b1 in
+        let len2 = dim b2 in
+        assert (Int.equal len1 len2) ;
+        for ndx = 0 to len1 - 1 do
+          assert (Char.equal (get b1 ndx) (get b2 ndx))
+        done
+
+      let _serial_killer ~(key : 'a Key.t) ~(data : 'a) =
+        let bin_key : 'a Bin_prot.Type_class.t = Key.binable_data_type key in
+        let bin_data = bin_data_dump key data in
+        let rec loop n =
+          if n = 0 then bin_data
+          else
+            let deserialized = bin_key.reader.read bin_data ~pos_ref:(ref 0) in
+            let writer = bin_key.writer in
+            let len = writer.size deserialized in
+            let buf = Bin_prot.Common.create_buf len in
+            let len' = writer.write buf ~pos:0 deserialized in
+            assert (Int.equal len len') ;
+            assert_eq_buf bin_data buf ;
+            loop (n - 1)
+        in
+        Printf.eprintf "DESERIALIZING LOOP\n%!" ;
+        loop 20
+
       let set t ~(key : 'a Key.t) ~(data : 'a) : unit =
         Printf.eprintf "WRITING SERIALIZATION\n%!" ;
+        (*        let bin_data = serial_killer ~key ~data in *)
         let bin_data = bin_data_dump key data in
-        let bin_key : 'a Bin_prot.Type_class.t = Key.binable_data_type key in
-        Printf.eprintf "DESERIALIZING\n%!" ;
-        let deserialized = bin_key.reader.read bin_data ~pos_ref:(ref 0) in
-        let writer = bin_key.writer in
-        let buf = Bin_prot.Common.create_buf (writer.size deserialized) in
-        Printf.eprintf "WRITING EXTRA SERIALIZATION\n%!" ;
-        ignore (writer.write buf ~pos:0 deserialized) ;
-        Printf.eprintf "EQ BUFFS: %B\n%!" (buf = bin_data) ;
         set_raw t ~key ~data:bin_data
 
       let remove t ~(key : 'a Key.t) =

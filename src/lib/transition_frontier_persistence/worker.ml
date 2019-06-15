@@ -127,6 +127,37 @@ end = struct
                 old_root_data)) ;
         Logger.trace t.logger !"Setting old root data" ~module_:__MODULE__
           ~location:__LOC__ ;
+        let assert_eq_buf b1 b2 =
+          let open Bigarray.Array1 in
+          let len1 = dim b1 in
+          let len2 = dim b2 in
+          assert (Int.equal len1 len2) ;
+          for ndx = 0 to len1 - 1 do
+            assert (Char.equal (get b1 ndx) (get b2 ndx))
+          done
+        in
+        let scan_state_bin_prot =
+          Inputs.Staged_ledger.Scan_state.Stable.V1.bin_t
+        in
+        let serialized =
+          Bin_prot.Utils.bin_dump scan_state_bin_prot.writer scan_state
+        in
+        Stdlib.Printf.eprintf "LOOPING\n%!" ;
+        let rec loop n =
+          if n = 0 then ()
+          else
+            let deserialized =
+              scan_state_bin_prot.reader.read ~pos_ref:(ref 0) serialized
+            in
+            let reserialized =
+              Bin_prot.Utils.bin_dump scan_state_bin_prot.writer deserialized
+            in
+            assert (deserialized = scan_state) ;
+            assert_eq_buf serialized reserialized ;
+            loop (n - 1)
+        in
+        loop 25 ;
+        Stdlib.Printf.eprintf "DONE LOOPING\n%!" ;
         Transition_storage.set t.transition_storage ~key:Root
           ~data:new_root_data ;
         Logger.trace t.logger
