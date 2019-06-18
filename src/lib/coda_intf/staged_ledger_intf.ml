@@ -442,6 +442,8 @@ module type Staged_ledger_generalized_intf = sig
 
     val is_valid : t -> bool
 
+    val copy : t -> t
+
     val empty : unit -> t
 
     val snark_job_list_json : t -> string

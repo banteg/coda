@@ -23,21 +23,35 @@ module Make (Inputs : Intf.Main_inputs) = struct
         Strict_pipe.Writer.t
     ; buffer: Transition_frontier.Diff.Mutant.E.with_value Queue.t }
 
+  let copy_diff_if_update_root (type a)
+      (diff : a Transition_frontier.Diff.Mutant.t) :
+      a Transition_frontier.Diff.Mutant.t =
+    match diff with
+    | Update_root update ->
+        Update_root
+          { update with
+            scan_state= Inputs.Staged_ledger.Scan_state.copy update.scan_state
+          }
+    | _ ->
+        diff
+
   let write_diff_and_verify (type a) ~logger ~acc_hash worker
       ((diff, ground_truth_mutant) : a Transition_frontier.Diff.Mutant.t * a) =
+    (* make a copy of scan_state in Update_root diff, in case fields might get mutated *)
+    let diff' = copy_diff_if_update_root diff in
     let ground_truth_hash =
-      Transition_frontier.Diff.Mutant.hash ~logger acc_hash diff
+      Transition_frontier.Diff.Mutant.hash ~logger acc_hash diff'
         ground_truth_mutant
     in
-    ( match diff with
+    ( match diff' with
     | Update_root _ ->
         Logger.trace logger "Ground truth Handled mutant diff ****"
           ~module_:__MODULE__ ~location:__LOC__
           ~metadata:
             [ ( "diff_mutant"
-              , Transition_frontier.Diff.Mutant.key_to_yojson diff )
+              , Transition_frontier.Diff.Mutant.key_to_yojson diff' )
             ; ( "ground_truth_value"
-              , Transition_frontier.Diff.Mutant.value_to_yojson diff
+              , Transition_frontier.Diff.Mutant.value_to_yojson diff'
                   ground_truth_mutant )
             ; ( "ground_truth_hash"
               , `String
@@ -47,7 +61,7 @@ module Make (Inputs : Intf.Main_inputs) = struct
         () ) ;
     match%map
       Worker.handle_diff worker acc_hash
-        (Transition_frontier.Diff.Mutant.E.E diff)
+        (Transition_frontier.Diff.Mutant.E.E diff')
     with
     | Error e ->
         Logger.error ~module_:__MODULE__ ~location:__LOC__ logger
@@ -61,7 +75,7 @@ module Make (Inputs : Intf.Main_inputs) = struct
             !"Unable to write mutant diff correctly as hashes are different:\n\
              \ %s. Hash of groundtruth %s Hash of actual %s"
             (Yojson.Safe.to_string
-               (Transition_frontier.Diff.Mutant.key_to_yojson diff))
+               (Transition_frontier.Diff.Mutant.key_to_yojson diff'))
             (Transition_frontier.Diff.Hash.to_string ground_truth_hash)
             (Transition_frontier.Diff.Hash.to_string new_hash)
             ()
