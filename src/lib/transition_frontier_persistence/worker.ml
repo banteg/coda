@@ -127,14 +127,21 @@ end = struct
                 old_root_data)) ;
         Logger.trace t.logger !"Setting old root data" ~module_:__MODULE__
           ~location:__LOC__ ;
-        let assert_eq_buf b1 b2 =
+        let eq_buf b1 b2 =
           let open Bigarray.Array1 in
           let len1 = dim b1 in
           let len2 = dim b2 in
           assert (Int.equal len1 len2) ;
-          for ndx = 0 to len1 - 1 do
-            assert (Char.equal (get b1 ndx) (get b2 ndx))
-          done
+          let eq = ref true in
+          let ndx = ref 0 in
+          while !eq && !ndx < len1 do
+            if not (Char.equal (get b1 !ndx) (get b2 !ndx)) then (
+              Stdlib.Printf.eprintf "LEN1: %d LEN2: %d NDX: %d\n%!" len1 len2
+                !ndx ;
+              eq := false ) ;
+            incr ndx
+          done ;
+          !eq
         in
         let scan_state_bin_prot =
           Inputs.Staged_ledger.Scan_state.Stable.V1.bin_t
@@ -142,21 +149,29 @@ end = struct
         let serialized =
           Bin_prot.Utils.bin_dump scan_state_bin_prot.writer scan_state
         in
+        let deserialized =
+          scan_state_bin_prot.reader.read ~pos_ref:(ref 0) serialized
+        in
         Stdlib.Printf.eprintf "LOOPING\n%!" ;
         let rec loop n =
           if n = 0 then ()
           else
-            let deserialized =
-              scan_state_bin_prot.reader.read ~pos_ref:(ref 0) serialized
-            in
             let reserialized =
               Bin_prot.Utils.bin_dump scan_state_bin_prot.writer deserialized
             in
-            assert (deserialized = scan_state) ;
-            assert_eq_buf serialized reserialized ;
+            if not (eq_buf serialized reserialized) then
+              assert
+                (*  
+            let open Sexp_diff_kernel in
+            Stdlib.Printf.eprintf !"SCAN_STATE: %{sexp: Inputs.Staged_ledger.Scan_state.t}" scan_state;
+              Stdlib.Printf.eprintf !"DESERIALIZED: %{sexp: Inputs.Staged_ledger.Scan_state.t}" deserialized;
+              let original = Inputs.Staged_ledger.Scan_state.sexp_of_t scan_state in
+              let updated = Inputs.Staged_ledger.Scan_state.sexp_of_t deserialized in
+              Stdlib.Printf.eprintf !"DIFF: %{sexp: Sexp_diff_kernel.Diff.t}" (Algo.diff ~original ~updated ()); *)
+                false ;
             loop (n - 1)
         in
-        loop 25 ;
+        loop 30 ;
         Stdlib.Printf.eprintf "DONE LOOPING\n%!" ;
         Transition_storage.set t.transition_storage ~key:Root
           ~data:new_root_data ;

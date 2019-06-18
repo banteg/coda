@@ -44,12 +44,14 @@ module State = struct
     let repeat n x = List.init n ~f:(fun _ -> x) in
     let merges1 = repeat (parallelism - 1) (Merge Empty) in
     let bases1 = repeat parallelism (Base None) in
+    eprintf "MUT JOB POSITION\n%!" ;
     jobs.position <- -1 ;
     List.iter [merges1; bases1] ~f:(Ring_buffer.add_many jobs) ;
     let level_pointer =
       Array.init (parallelism_log_2 + 1) ~f:(fun i -> Int.pow 2 i - 1)
     in
     assert (root_at_depth >= 0 && root_at_depth <= parallelism_log_2) ;
+    eprintf "MUT JOB POSITION2\n%!" ;
     jobs.position <- 0 ;
     { jobs
     ; level_pointer
@@ -306,9 +308,12 @@ module State = struct
     if t.level_pointer.(cur_level) = cur_pos then
       let last_node = Int.pow 2 (cur_level + 1) - 2 in
       let first_node = Int.pow 2 cur_level - 1 in
-      if cur_pos + 1 <= last_node then
-        t.level_pointer.(cur_level) <- cur_pos + 1
-      else t.level_pointer.(cur_level) <- first_node
+      if cur_pos + 1 <= last_node then (
+        eprintf "MUT LEVEL POINTER\n%!" ;
+        t.level_pointer.(cur_level) <- cur_pos + 1 )
+      else (
+        eprintf "MUT LEVEL POINTER\n%!" ;
+        t.level_pointer.(cur_level) <- first_node )
     else ()
 
   let job_ready job =
@@ -416,7 +421,9 @@ module State = struct
                 failwith
                   "Not possible, if we're emitting something, we have data"
             | last :: rest ->
+                eprintf "MUT ACC\n%!" ;
                 t.acc <- (fst t.acc |> Int.( + ) 1, Some (z, List.rev last)) ;
+                eprintf "MUT OTHER TREES DATA\n%!" ;
                 t.other_trees_data <- List.rev rest ;
                 Ok () )
           else
@@ -436,7 +443,9 @@ module State = struct
         let%bind () = update_new_job t z (dir cur_pos) parent_pos in
         let%bind () = update_cur_job t (Base None) cur_pos in
         let () = incr_level_pointer t cur_pos in
+        eprintf "MUT BASE_NONE_POS\n%!" ;
         t.base_none_pos <- Some (Option.value t.base_none_pos ~default:cur_pos) ;
+        eprintf "MUT CURRENT_DATA_LENGTH\n%!" ;
         t.current_data_length <- t.current_data_length - 1 ;
         let () =
           match Ring_buffer.read_i t.jobs parent_pos with
@@ -482,10 +491,14 @@ module State = struct
     let%map () = Ring_buffer.direct_update (State.jobs state) base_pos ~f in
     let last_leaf_pos = block_of state base_pos + slots_per_block state - 1 in
     if base_pos = last_leaf_pos then (
+      eprintf "MUT OTHER TREES DATA2\n%!" ;
       state.other_trees_data
       <- (value :: state.recent_tree_data) :: state.other_trees_data ;
+      eprintf "MUT RECENT TREES DATA\n%!" ;
       state.recent_tree_data <- [] )
-    else state.recent_tree_data <- value :: state.recent_tree_data
+    else (
+      eprintf "MUT RECENT TREES DATA2 \n%!" ;
+      state.recent_tree_data <- value :: state.recent_tree_data )
 
   let include_many_data (state : ('a, 'd) State.t) data : unit Or_error.t =
     List.fold ~init:(Ok ()) data ~f:(fun acc a ->
@@ -497,6 +510,7 @@ module State = struct
         | Some pos ->
             let%map () = include_one_datum state a pos in
             let () = Queue.enqueue state.stateful_work_order pos in
+            eprintf "MUT BASE NONE POS2\n%!" ;
             state.base_none_pos <- next_base_pos state pos )
 
   module Make_foldable (M : Monad.S) = struct
@@ -631,6 +645,7 @@ let enqueue_data : state:('a, 'd) State.t -> data:'d list -> unit Or_error.t =
          "Data list too large. Max available is %d, current list length is %d"
          (free_space ~state) (List.length data))
   else (
+    eprintf "MUT CURRENT DATA LENGTH\n%!" ;
     state.current_data_length <- state.current_data_length + List.length data ;
     State.include_many_data state data )
 
@@ -743,6 +758,7 @@ let fill_in_completed_jobs :
   let old_jobs = Ring_buffer.copy state.jobs in
   let last_acc = state.acc in
   let%map () = State.consume state completed_jobs old_jobs in
+  eprintf "MUT STATE JOBS POS3\n%!" ;
   state.jobs.position <- 0 ;
   if not (fst last_acc = fst state.acc) then snd state.acc else None
 
@@ -765,10 +781,13 @@ let next_on_new_tree (state : ('a, 's) State.t) =
 let update_curr_job_seq_no : ('a, 'd) State.t -> unit Or_error.t =
  fun state ->
   let open Or_error.Let_syntax in
-  if state.curr_job_seq_no + 1 = Int.max_value then
+  if state.curr_job_seq_no + 1 = Int.max_value then (
     let%map latest_seq_no = State.reset_seq_no state in
-    state.curr_job_seq_no <- latest_seq_no
-  else Ok (state.curr_job_seq_no <- state.curr_job_seq_no + 1)
+    eprintf "MUT CURR_JOB_SEQ_NO\n%!" ;
+    state.curr_job_seq_no <- latest_seq_no )
+  else (
+    eprintf "MUT CURR_JOB_SEQ_NO 2\n%!" ;
+    Ok (state.curr_job_seq_no <- state.curr_job_seq_no + 1) )
 
 let current_job_sequence_number : ('a, 'd) State.t -> int =
  fun state -> state.curr_job_seq_no
@@ -826,6 +845,7 @@ let gen :
           let tuple =
             if Option.is_some (snd old_tuple) then old_tuple else s.acc
           in
+          eprintf "MUT ACC2\n%!" ;
           s.acc <- (fst s.acc, f_acc tuple x) ) ;
       Or_error.ok_exn @@ enqueue_data ~state:s ~data:chunk ;
       assert (is_valid s) ;
@@ -914,6 +934,7 @@ let%test_module "scans" =
               if Option.is_some (snd old_tuple) then f_acc old_tuple x
               else snd state.acc
             in
+            eprintf "MUT ACC3\n%!" ;
             state.acc <- (fst state.acc, merged) ;
             merged )
       in
@@ -1029,6 +1050,7 @@ let%test_module "scans" =
                             f_merge_up old_tuple x
                           else snd state.acc
                         in
+                        eprintf "MUT ACC 3\n%!" ;
                         state.acc <- (fst state.acc, merged) ;
                         merged )
                   in

@@ -126,6 +126,65 @@ module Stable = struct
     end
 
     include T
+
+    let eq_buf buf1 buf2 =
+      let open Bigarray.Array1 in
+      let len1 = dim buf1 in
+      let len2 = dim buf2 in
+      assert (Int.equal len1 len2) ;
+      let eq = ref true in
+      let ndx = ref 0 in
+      while !eq && !ndx < len1 do
+        if not (Char.equal (get buf1 !ndx) (get buf2 !ndx)) then (
+          Stdlib.Printf.eprintf "LEN1: %d LEN2: %d NDX: %d\n%!" len1 len2 !ndx ;
+          eq := false ) ;
+        incr ndx
+      done ;
+      !eq
+
+    let bin_write_t wa wd buf ~pos t =
+      let open Bigarray in
+      let wa buf ~pos a =
+        let result = wa buf ~pos a in
+        let s =
+          String.init (result - pos) ~f:(fun i -> Array1.get buf (pos + i))
+        in
+        let rec loop n =
+          if n >= 0 then (
+            let result' = wa buf ~pos a in
+            assert (result = result') ;
+            let s' =
+              String.init (result' - pos) ~f:(fun i -> Array1.get buf (pos + i))
+            in
+            if not (String.equal s s') then (
+              eprintf "WA FAILED ON ITER: %d\n%!" n ;
+              assert false ) ;
+            loop (n - 1) )
+        in
+        loop 50 ; result
+      in
+      let wd buf ~pos a =
+        let result = wd buf ~pos a in
+        let s =
+          String.init (result - pos) ~f:(fun i -> Array1.get buf (pos + i))
+        in
+        let rec loop n =
+          if n >= 0 then (
+            let result' = wd buf ~pos a in
+            assert (result = result') ;
+            let s' =
+              String.init (result' - pos) ~f:(fun i -> Array1.get buf (pos + i))
+            in
+            if not (String.equal s s') then (
+              eprintf "WD FAILED ON ITER: %d\n%!" n ;
+              assert false ) ;
+            loop (n - 1) )
+        in
+        loop 50 ; result
+      in
+      bin_write_t wa wd buf ~pos t
+
+    let bin_read_t ra rd buf ~pos_ref = bin_read_t ra rd buf ~pos_ref
   end
 
   module Latest = V1

@@ -583,6 +583,7 @@ module Make
           else Or_error.error_string "Unexpected ledger proof emitted" )
     in
     if new_count <= work_capacity then (
+      eprintf "MUT JOB_COUNT\n%!" ;
       t.job_count <- new_count ;
       Ok proof_opt )
     else

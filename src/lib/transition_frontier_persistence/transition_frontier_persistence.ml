@@ -25,6 +25,7 @@ module Make (Inputs : Intf.Main_inputs) = struct
 
   let write_diff_and_verify (type a) ~logger ~acc_hash worker
       ((diff, ground_truth_mutant) : a Transition_frontier.Diff.Mutant.t * a) =
+    eprintf "WRITING DIFF AND VERIFYING\n%!" ;
     let ground_truth_hash =
       Transition_frontier.Diff.Mutant.hash ~logger acc_hash diff
         ground_truth_mutant
@@ -160,6 +161,7 @@ module Make (Inputs : Intf.Main_inputs) = struct
                     Deferred.return
                     @@
                     if not @@ Strict_pipe.Writer.is_closed t.worker_writer then (
+                      (* DEEP COPY *)
                       Queue.enqueue_all t.buffer new_diffs ;
                       select_work t worker_thread )
                     else worker_thread ) ))

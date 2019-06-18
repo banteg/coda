@@ -84,6 +84,28 @@ struct
       module T = struct
         type t = Pedersen.Digest.Stable.V1.t
         [@@deriving bin_io, sexp, compare, hash, yojson, version]
+
+        let bin_write_t buf ~pos t =
+          let open Bigarray in
+          let result = bin_write_t buf ~pos t in
+          (*          eprintf "DATA_HASH BUF LEN: %d POS: %d RESULT: %d (RESULT - POS): %d\n%!" (Array1.dim buf) pos result (result - pos); *)
+          let s =
+            String.init (result - pos) ~f:(fun i -> Array1.get buf (pos + i))
+          in
+          let rec loop n =
+            if n >= 0 then (
+              let result' = bin_write_t buf ~pos t in
+              assert (result = result') ;
+              let s' =
+                String.init (result' - pos) ~f:(fun i ->
+                    Array1.get buf (pos + i) )
+              in
+              if not (String.equal s s') then (
+                eprintf "DATA_HASH FAILED ON ITER: %d\n%!" n ;
+                assert false ) ;
+              loop (n - 1) )
+          in
+          loop 2 ; result
       end
 
       include T

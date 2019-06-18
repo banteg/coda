@@ -8,9 +8,13 @@ module Stable = struct
       (* Tock.Proof.t is not bin_io; should we wrap that snarky type? *)
       type t = Tock.Proof.t [@@deriving version {asserted; unnumbered}]
 
-      let to_string = Binable.to_string (module Tock_backend.Proof)
+      let to_string t =
+        (*        Printf.eprintf "PROOF TO_STRING\n%!"; *)
+        Binable.to_string (module Tock_backend.Proof) t
 
-      let of_string = Binable.of_string (module Tock_backend.Proof)
+      let of_string s =
+        (*        Printf.eprintf "PROOF OF_STRING\n%!"; *)
+        Binable.of_string (module Tock_backend.Proof) s
     end
 
     include T
