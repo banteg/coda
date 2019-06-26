@@ -33,6 +33,7 @@ module type S = sig
       val update :
            Hash.var * var
         -> Update.var
+        -> logger:Logger.t
         -> (Hash.var * var * [`Success of Boolean.var], _) Checked.t
     end
   end
@@ -150,7 +151,7 @@ struct
       let%bind prev_state_hash = State.Checked.hash prev_state in
       let%bind next_state_hash, _next_state, `Success success =
         with_label __LOC__
-          (State.Checked.update (prev_state_hash, prev_state) update)
+          (State.Checked.update ~logger (prev_state_hash, prev_state) update)
       in
       let%bind wrap_vk =
         exists' (Verifier.Verification_key.typ ~input_size:wrap_input_size)

@@ -7,6 +7,7 @@ module type Update_intf = sig
     val update :
          State_hash.var * Protocol_state.var
       -> Snark_transition.var
+      -> logger:Logger.t
       -> ( State_hash.var * Protocol_state.var * [`Success of Boolean.var]
          , _ )
          Checked.t

@@ -20,6 +20,21 @@ let print_heartbeat () =
   loop ()
 
 let main () =
+  let snark_work_public_keys =
+    Fn.const
+    @@ Some
+         (List.nth_exn Genesis_ledger.accounts 3 |> snd |> Account.public_key)
+  in
+  let%bind testnet =
+    Coda_worker_testnet.test logger 3 Option.some snark_work_public_keys
+      Cli_lib.Arg_type.Sequence ~max_concurrent_connections:None
+  in
+  don't_wait_for (print_heartbeat ()) ;
+  let%bind () = after (Time.Span.of_min 10.) in
+  Coda_worker_testnet.Api.teardown testnet
+
+(*
+let main () =
   let num_proposers = 3 in
   let snark_work_public_keys ndx =
     List.nth_exn Genesis_ledger.accounts ndx
@@ -121,6 +136,7 @@ let main () =
     "Saw %i blocks proposed by delegatee" !delegatee_proposal_count ;
   heartbeat_flag := false ;
   Coda_worker_testnet.Api.teardown testnet
+*)
 
 let command =
   Command.async

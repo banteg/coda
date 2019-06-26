@@ -240,6 +240,7 @@ module type State_hooks_intf = sig
   val next_state_checked :
        prev_state:protocol_state_var
     -> prev_state_hash:Coda_base.State_hash.var
+    -> logger:Logger.t
     -> snark_transition_var
     -> Currency.Amount.var
     -> ( [`Success of Snark_params.Tick.Boolean.var] * consensus_state_var

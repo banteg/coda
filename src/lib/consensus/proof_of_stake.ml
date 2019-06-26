@@ -836,12 +836,26 @@ module Data = struct
       (evaluation, account.balance)
 
     module Checked = struct
-      let%snarkydef check shifted ~(epoch_ledger : Epoch_ledger.var) ~epoch
-          ~slot ~seed =
+      let%snarkydef check shifted ~logger ~(epoch_ledger : Epoch_ledger.var)
+          ~epoch ~slot ~seed =
         let open Snark_params.Tick in
         let%bind winner_addr =
           request_witness Coda_base.Account.Index.Unpacked.typ
             (As_prover.return Winner_address)
+        in
+        let%bind () =
+          as_prover
+            As_prover.(
+              Let_syntax.(
+                let%map epoch = read Segment_id.Unpacked.typ epoch
+                and slot = read Segment_id.Unpacked.typ slot
+                and seed = read Epoch_seed.typ seed in
+                Logger.info logger ~module_:__MODULE__ ~location:__LOC__
+                  ~metadata:
+                    [ ("epoch", `Int (UInt32.to_int epoch))
+                    ; ("slot", `Int (UInt32.to_int slot))
+                    ; ("seed", Epoch_seed.to_yojson seed) ]
+                  "in snark doing vrf eval at $epoch:$slot"))
         in
         let%bind result, my_stake =
           get_vrf_evaluation shifted ~ledger:epoch_ledger.hash
@@ -909,8 +923,11 @@ module Data = struct
       let open Local_state in
       let open Snapshot in
       Logger.info logger ~module_:__MODULE__ ~location:__LOC__
-        "Checking vrf evaluations at %d:%d" (Epoch.to_int epoch)
-        (Epoch.Slot.to_int slot) ;
+        ~metadata:
+          [ ("epoch", `Int (Epoch.to_int epoch))
+          ; ("slot", `Int (Epoch.Slot.to_int slot))
+          ; ("seed", Epoch_seed.to_yojson seed) ]
+        "Checking vrf evaluations at $epoch:$slot" ;
       with_return (fun {return} ->
           Hashtbl.iteri
             ( Snapshot.delegators epoch_snapshot public_key_compressed
@@ -1926,7 +1943,7 @@ module Data = struct
         (previous_protocol_state_hash : Coda_base.State_hash.var)
         ~(supply_increase : Currency.Amount.var)
         ~(previous_blockchain_state_ledger_hash :
-           Coda_base.Frozen_ledger_hash.var) =
+           Coda_base.Frozen_ledger_hash.var) ~logger =
       let open Snark_params.Tick in
       let {Poly.curr_epoch= prev_epoch; curr_slot= prev_slot; _} =
         previous_state
@@ -1955,7 +1972,7 @@ module Data = struct
         let%bind (module M) = Inner_curve.Checked.Shifted.create () in
         Vrf.Checked.check
           (module M)
-          ~epoch_ledger:last_data.ledger ~epoch:transition_data.epoch
+          ~logger ~epoch_ledger:last_data.ledger ~epoch:transition_data.epoch
           ~slot:transition_data.slot ~seed:last_data.seed
       in
       let%bind new_total_currency =
@@ -2753,7 +2770,7 @@ module Hooks = struct
 
     include struct
       let%snarkydef next_state_checked ~(prev_state : Protocol_state.var)
-          ~(prev_state_hash : Coda_base.State_hash.var) transition
+          ~(prev_state_hash : Coda_base.State_hash.var) ~logger transition
           supply_increase =
         Consensus_state.update_var
           (Protocol_state.consensus_state prev_state)
@@ -2762,6 +2779,7 @@ module Hooks = struct
           ~previous_blockchain_state_ledger_hash:
             ( Protocol_state.blockchain_state prev_state
             |> Blockchain_state.snarked_ledger_hash )
+          ~logger
     end
 
     module For_tests = struct
@@ -2837,6 +2855,7 @@ let time_hum (now : Core_kernel.Time.t) =
   Printf.sprintf "%d:%d" (Data.Epoch.to_int epoch)
     (Data.Epoch.Slot.to_int slot)
 
+(*
 let%test_module "Proof of stake tests" =
   ( module struct
     open Coda_base
@@ -2938,3 +2957,4 @@ let%test_module "Proof of stake tests" =
       assert (Value.equal checked_value next_consensus_state) ;
       ()
   end )
+  *)
