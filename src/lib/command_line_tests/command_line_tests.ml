@@ -9,9 +9,13 @@ let%test_module "Command line tests" =
   ( module struct
     (* executable location relative to src/default/lib/command_line_tests
 
-         dune won't allow running it via "dune exec", because it's outside its 
-         workspace, so we invoke the executable directly
-       *)
+       dune won't allow running it via "dune exec", because it's outside its
+       workspace, so we invoke the executable directly
+
+       the coda.exe executable must have been built before running the test
+       here, else it will fail
+
+     *)
     let coda_exe = "../../app/cli/src/coda.exe"
 
     let start_daemon config_dir port =
@@ -43,16 +47,16 @@ let%test_module "Command line tests" =
     let test_background_daemon () =
       let config_dir = "/tmp/coda-spun-test" in
       let port = 1337 in
-      (* it takes awhile for the daemon to become available *)
       let client_delay = 12. in
       let%bind _ = create_config_directory config_dir in
       let%bind _ = start_daemon config_dir port in
+      (* it takes awhile for the daemon to become available *)
       let%bind () = after (Time.Span.of_sec client_delay) in
       let%bind result = start_client port in
       let%map _ = stop_daemon port in
       result
 
-    let%test "The coda daemon performs work in the background" =
+    let%test "The coda daemon works in background mode" =
       Async.Thread_safe.block_on_async_exn (fun () ->
           test_background_daemon () |> Deferred.map ~f:Result.is_ok )
   end )
