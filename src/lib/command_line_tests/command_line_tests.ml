@@ -19,34 +19,52 @@ let%test_module "Command line tests" =
           ; sprintf "%d" port ]
 
     let test_background_daemon () =
+      let log_dir = "/tmp/coda-spun-test" in
+      let%bind _ = Process.run_exn ~prog:"rm" ~args:["-rf"; log_dir] () in
+      let%bind _ = Process.run_exn ~prog:"mkdir" ~args:["-p"; log_dir] () in
       let open Deferred.Let_syntax in
       let port = 1337 in
-      let%bind _ =
+      Core.Printf.eprintf "STARTING DAEMON\n%!" ;
+      let%bind result0 =
         Process.run_exn ~prog:"dune"
           ~args:
             [ "exec"
-            ; "coda"
+            ; "coda.exe"
             ; "daemon"
             ; "--"
             ; "-background"
             ; "-client-port"
-            ; sprintf "%d" port ]
+            ; sprintf "%d" port
+            ; "-config-directory"
+            ; log_dir ]
           ()
       in
-      let%bind () = after (Time.Span.of_ms 100.0) in
-      let open Deferred.Or_error.Let_syntax in
+      Core.Printf.eprintf !"RESULT0: %s\n%!" result0 ;
+      Core.Printf.eprintf "WAITING\n%!" ;
+      let%bind () = after (Time.Span.of_sec 5.) in
+      let open Deferred.Let_syntax in
+      Core.Printf.eprintf "STARTING CLIENT\n%!" ;
       let%bind result =
-        Process.run ~prog:"dune"
-          ~args:
-            [ "exec"
-            ; "coda"
-            ; "client"
-            ; "status"
-            ; "--"
-            ; "-daemon-port"
-            ; sprintf "%d" port ]
-          ()
+        match%map
+          Process.run ~prog:"dune"
+            ~args:
+              [ "exec"
+              ; "coda.exe"
+              ; "client"
+              ; "status"
+              ; "--"
+              ; "-daemon-port"
+              ; sprintf "%d" port ]
+            ()
+        with
+        | Ok s ->
+            Ok s
+        | Error e ->
+            let%bind _ = stop port in
+            Error e
       in
+      Core.Printf.eprintf !"RESULT: %s\n%!" result ;
+      Core.Printf.eprintf "STOPPING\n%!" ;
       let%map _ = stop port in
       result
 
