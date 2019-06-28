@@ -2,70 +2,54 @@ open Core
 open Async
 
 (**
- * This module tests the basic funtionalities of coda through the cli
+ * Test the basic functionality of the coda daemon and client through the CLI
  *)
 
 let%test_module "Command line tests" =
   ( module struct
-    let stop port =
-      Process.run () ~prog:"dune"
+    (* executable location relative to src/default/lib/command_line_tests
+
+         dune won't allow running it via "dune exec", because it's outside its 
+         workspace, so we invoke the executable directly
+       *)
+    let coda_exe = "../../app/cli/src/coda.exe"
+
+    let start_daemon config_dir port =
+      Process.run_exn ~prog:coda_exe
         ~args:
-          [ "exec"
-          ; "coda"
-          ; "client"
-          ; "stop-daemon"
-          ; "--"
-          ; "-daemon-port"
-          ; sprintf "%d" port ]
+          [ "daemon"
+          ; "-background"
+          ; "-client-port"
+          ; sprintf "%d" port
+          ; "-config-directory"
+          ; config_dir ]
+        ()
+
+    let stop_daemon port =
+      Process.run () ~prog:coda_exe
+        ~args:["client"; "stop-daemon"; "-daemon-port"; sprintf "%d" port]
+
+    let start_client port =
+      Process.run ~prog:coda_exe
+        ~args:["client"; "status"; "-daemon-port"; sprintf "%d" port]
+        ()
+
+    let create_config_directory config_dir =
+      (* create empty config dir to avoid any issues with the default config dir *)
+      let%bind _ = Process.run_exn ~prog:"rm" ~args:["-rf"; config_dir] () in
+      let%map _ = Process.run_exn ~prog:"mkdir" ~args:["-p"; config_dir] () in
+      ()
 
     let test_background_daemon () =
-      let log_dir = "/tmp/coda-spun-test" in
-      let%bind _ = Process.run_exn ~prog:"rm" ~args:["-rf"; log_dir] () in
-      let%bind _ = Process.run_exn ~prog:"mkdir" ~args:["-p"; log_dir] () in
-      let open Deferred.Let_syntax in
+      let config_dir = "/tmp/coda-spun-test" in
       let port = 1337 in
-      Core.Printf.eprintf "STARTING DAEMON\n%!" ;
-      let%bind result0 =
-        Process.run_exn ~prog:"dune"
-          ~args:
-            [ "exec"
-            ; "coda.exe"
-            ; "daemon"
-            ; "--"
-            ; "-background"
-            ; "-client-port"
-            ; sprintf "%d" port
-            ; "-config-directory"
-            ; log_dir ]
-          ()
-      in
-      Core.Printf.eprintf !"RESULT0: %s\n%!" result0 ;
-      Core.Printf.eprintf "WAITING\n%!" ;
-      let%bind () = after (Time.Span.of_sec 5.) in
-      let open Deferred.Let_syntax in
-      Core.Printf.eprintf "STARTING CLIENT\n%!" ;
-      let%bind result =
-        match%map
-          Process.run ~prog:"dune"
-            ~args:
-              [ "exec"
-              ; "coda.exe"
-              ; "client"
-              ; "status"
-              ; "--"
-              ; "-daemon-port"
-              ; sprintf "%d" port ]
-            ()
-        with
-        | Ok s ->
-            Ok s
-        | Error e ->
-            let%bind _ = stop port in
-            Error e
-      in
-      Core.Printf.eprintf !"RESULT: %s\n%!" result ;
-      Core.Printf.eprintf "STOPPING\n%!" ;
-      let%map _ = stop port in
+      (* it takes awhile for the daemon to become available *)
+      let client_delay = 12. in
+      let%bind _ = create_config_directory config_dir in
+      let%bind _ = start_daemon config_dir port in
+      let%bind () = after (Time.Span.of_sec client_delay) in
+      let%bind result = start_client port in
+      let%map _ = stop_daemon port in
       result
 
     let%test "The coda daemon performs work in the background" =
