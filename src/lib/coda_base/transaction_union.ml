@@ -44,7 +44,7 @@ let of_transaction : Transaction.t -> t = function
       { payload= Transaction_union_payload.of_user_command_payload payload
       ; sender
       ; signature }
-  | Coinbase {proposer; fee_transfer; amount} ->
+  | Coinbase {proposer; fee_transfer; amount; state_body_hash} ->
       let other_pk, other_amount =
         Option.value ~default:(proposer, Fee.zero) fee_transfer
       in
@@ -53,7 +53,9 @@ let of_transaction : Transaction.t -> t = function
               { fee= other_amount
               ; nonce= Account.Nonce.zero
               ; memo= User_command_memo.dummy }
-          ; body= {public_key= proposer; amount; tag= Tag.Coinbase} }
+          ; body=
+              {public_key= proposer; amount; tag= Tag.Coinbase; state_body_hash}
+          }
       ; sender= Public_key.decompress_exn other_pk
       ; signature= Signature.dummy }
   | Fee_transfer tr -> (
@@ -66,7 +68,8 @@ let of_transaction : Transaction.t -> t = function
             ; body=
                 { public_key= pk1
                 ; amount= Amount.of_fee fee1
-                ; tag= Tag.Fee_transfer } }
+                ; tag= Tag.Fee_transfer
+                ; state_body_hash= State_body_hash.dummy } }
         ; sender= Public_key.decompress_exn pk2
         ; signature= Signature.dummy }
       in

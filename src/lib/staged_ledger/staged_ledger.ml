@@ -1394,6 +1394,7 @@ include Make (struct
   module Compressed_public_key = Signature_lib.Public_key.Compressed
   module User_command = User_command
   module Fee_transfer = Fee_transfer
+  module State_body_hash = State_body_hash
   module Coinbase = Coinbase
 
   module Transaction = struct
@@ -1610,20 +1611,27 @@ let%test_module "test" =
         let receivers t = List.map (to_list t) ~f:(fun (pk, _) -> pk)
       end
 
+      module State_body_hash = struct
+        type t = int [@@deriving eq, sexp, bin_io, compare, eq, hash]
+
+        let dummy = -1
+      end
+
       module Coinbase = struct
         type public_key = string [@@deriving sexp, bin_io, compare, eq, hash]
 
         type fee_transfer = Fee_transfer.Single.Stable.V1.t
         [@@deriving sexp, bin_io, compare, eq, hash]
 
-        (* TODO : version *)
         type t =
           { proposer: public_key
           ; amount: Currency.Amount.Stable.V1.t
-          ; fee_transfer: fee_transfer option }
+          ; fee_transfer: fee_transfer option
+          ; state_body_hash: State_body_hash.t }
         [@@deriving sexp, bin_io, compare, eq, hash]
 
-        let supply_increase {proposer= _; amount; fee_transfer} =
+        let supply_increase
+            {proposer= _; amount; fee_transfer; state_body_hash= _} =
           match fee_transfer with
           | None ->
               Ok amount
@@ -1635,15 +1643,15 @@ let%test_module "test" =
         let fee_excess t =
           Or_error.map (supply_increase t) ~f:(fun _increase -> Fee.Signed.zero)
 
-        let is_valid {proposer= _; amount; fee_transfer} =
+        let is_valid {proposer= _; amount; fee_transfer; state_body_hash= _} =
           match fee_transfer with
           | None ->
               true
           | Some (_, fee) ->
               Currency.Amount.(of_fee fee <= amount)
 
-        let create ~amount ~proposer ~fee_transfer =
-          let t = {proposer; amount; fee_transfer} in
+        let create ~amount ~proposer ~fee_transfer ~state_body_hash =
+          let t = {proposer; amount; fee_transfer; state_body_hash} in
           if is_valid t then Ok t
           else
             Or_error.error_string "Coinbase.create: fee transfer was too high"

@@ -15,4 +15,6 @@ val of_base58_check : string -> t Base.Or_error.t
 (** Base58Check decoding *)
 val of_base58_check_exn : string -> t
 
+val dummy : t
+
 val zero : Crypto_params.Tick0.field

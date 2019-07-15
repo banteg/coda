@@ -16,6 +16,12 @@ module type For_transaction_snark_scan_state_intf = sig
     type t [@@deriving compare, eq, sexp]
   end
 
+  module State_body_hash : sig
+    type t
+
+    val dummy : t
+  end
+
   module Frozen_ledger_hash : sig
     type t [@@deriving eq, sexp]
 
@@ -60,12 +66,14 @@ module type For_transaction_snark_scan_state_intf = sig
     type t = private
       { proposer: Compressed_public_key.t
       ; amount: Currency.Amount.t
-      ; fee_transfer: Fee_transfer.Single.t option }
+      ; fee_transfer: Fee_transfer.Single.t option
+      ; state_body_hash: State_body_hash.t }
 
     val create :
          amount:Currency.Amount.t
       -> proposer:Compressed_public_key.t
       -> fee_transfer:Fee_transfer.Single.t option
+      -> state_body_hash:State_body_hash.t
       -> t Or_error.t
   end
 

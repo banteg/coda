@@ -1577,11 +1577,13 @@ let%test_module "transaction_snark" =
           let proposer = mk_pubkey () in
           let other = mk_pubkey () in
           let pending_coinbase_init = Pending_coinbase.Stack.empty in
+          let state_body_hash = State_body_hash.dummy in
           let cb =
             Coinbase.create
               ~amount:(Currency.Amount.of_int 10)
               ~proposer
               ~fee_transfer:(Some (other, Currency.Fee.of_int 1))
+              ~state_body_hash
             |> Or_error.ok_exn
           in
           let transaction = Transaction.Coinbase cb in

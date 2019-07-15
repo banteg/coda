@@ -31,11 +31,12 @@ module type S = sig
   end
 
   module Coinbase_data : sig
-    type t = Public_key.Compressed.t * Amount.t [@@deriving bin_io, sexp]
+    type t = Public_key.Compressed.t * Amount.t * State_body_hash.t
+    [@@deriving bin_io, sexp]
 
     type value [@@deriving bin_io, sexp]
 
-    type var = Public_key.Compressed.var * Amount.var
+    type var = Public_key.Compressed.var * Amount.var * State_body_hash.var
 
     val typ : (var, t) Typ.t
 
@@ -109,19 +110,38 @@ module type S = sig
     end
   end
 
+  and Stack_with_state_hash : sig
+    module Stable : sig
+      module V1 : sig
+        type t [@@deriving bin_io, eq, yojson, hash, sexp, compare, version]
+      end
+
+      module Latest = V1
+    end
+
+    type t = Stable.Latest.t
+
+    type var
+
+    val data_hash : t -> Hash.t
+  end
+
   val create : unit -> t Or_error.t
 
-  val remove_coinbase_stack : t -> (Stack.t * t) Or_error.t
+  val remove_coinbase_stack_with_state_hash :
+    t -> (Stack_with_state_hash.t * t) Or_error.t
 
   val merkle_root : t -> Hash.t
 
-  val handler : t -> is_new_stack:bool -> (request -> response) Staged.t
+  val handler : t -> is_new:bool -> (request -> response) Staged.t
 
-  val update_coinbase_stack : t -> Stack.t -> is_new_stack:bool -> t Or_error.t
+  val update_coinbase_stack_with_state_hash :
+    t -> Stack_with_state_hash.t -> is_new:bool -> t Or_error.t
 
-  val latest_stack : t -> is_new_stack:bool -> Stack.t Or_error.t
+  val latest_stack_with_state_hash :
+    t -> is_new:bool -> Stack_with_state_hash.t Or_error.t
 
-  val oldest_stack : t -> Stack.t Or_error.t
+  val oldest_stack_with_state_hash : t -> Stack_with_state_hash.t Or_error.t
 
   val hash_extra : t -> string
 
@@ -139,16 +159,21 @@ module type S = sig
     end
 
     type _ Request.t +=
-      | Coinbase_stack_path : Address.value -> path Request.t
-      | Get_coinbase_stack : Address.value -> (Stack.t * path) Request.t
-      | Set_coinbase_stack : Address.value * Stack.t -> unit Request.t
-      | Find_index_of_newest_stack : Address.value Request.t
-      | Find_index_of_oldest_stack : Address.value Request.t
+      | Coinbase_stack_with_state_hash_path : Address.value -> path Request.t
+      | Get_coinbase_stack_with_state_hash :
+          Address.value
+          -> (Stack_with_state_hash.t * path) Request.t
+      | Set_coinbase_stack_with_state_hash :
+          Address.value * Stack_with_state_hash.t
+          -> unit Request.t
+      | Find_index_of_newest_stack_with_state_hash : Address.value Request.t
+      | Find_index_of_oldest_stack_with_state_hash : Address.value Request.t
 
-    val get : var -> Address.var -> (Stack.var, _) Tick.Checked.t
+    val get :
+      var -> Address.var -> (Stack_with_state_hash.var, _) Tick.Checked.t
 
     (**
-       [update_stack t ~is_new_stack updtaed_stack] implements the following spec:
+       [update_stack t ~is_new updated_stack] implements the following spec:
        - gets the address[addr] of the latest stack or a new stack
        - finds a coinbase stack in [t] at path [addr] and pushes the coinbase_data on to the stack
        - returns a root [t'] of the tree
@@ -163,6 +188,8 @@ module type S = sig
        - returns a root [t'] of the tree
     *)
     val pop_coinbases :
-      var -> proof_emitted:Boolean.var -> (var * Stack.var, 's) Tick.Checked.t
+         var
+      -> proof_emitted:Boolean.var
+      -> (var * Stack_with_state_hash.var, 's) Tick.Checked.t
   end
 end

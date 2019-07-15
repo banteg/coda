@@ -7,19 +7,30 @@ open Currency
 module Tag = Transaction_union_tag
 
 module Body = struct
-  type ('tag, 'pk, 'amount) t_ = {tag: 'tag; public_key: 'pk; amount: 'amount}
+  type ('tag, 'pk, 'amount, 'state_body_hash) t_ =
+    { tag: 'tag
+    ; public_key: 'pk
+    ; amount: 'amount
+    ; state_body_hash: 'state_body_hash }
   [@@deriving sexp]
 
-  type var = (Tag.var, Public_key.Compressed.var, Currency.Amount.var) t_
+  type var =
+    ( Tag.var
+    , Public_key.Compressed.var
+    , Currency.Amount.var
+    , State_body_hash.var )
+    t_
 
-  type t = (Tag.t, Public_key.Compressed.t, Currency.Amount.t) t_
+  type t =
+    (Tag.t, Public_key.Compressed.t, Currency.Amount.t, State_body_hash.t) t_
   [@@deriving sexp]
 
-  let fold ({tag; public_key; amount} : t) =
+  let fold ({tag; public_key; amount; state_body_hash} : t) =
     Fold.(
       Tag.fold tag
       +> Public_key.Compressed.fold public_key
-      +> Currency.Amount.fold amount)
+      +> Currency.Amount.fold amount
+      +> State_body_hash.fold state_body_hash)
 
   let gen ~fee =
     let open Quickcheck.Generator.Let_syntax in
@@ -44,43 +55,62 @@ module Body = struct
             (Amount.of_fee fee, Amount.max_int)
       in
       Amount.gen_incl min max
-    and public_key = Public_key.Compressed.gen in
-    {tag; public_key; amount}
+    and public_key = Public_key.Compressed.gen
+    and state_body_hash =
+      (* state_body_hash is meaningful iff tag is Coinbase *)
+      if Tag.(equal tag Coinbase) then State_body_hash.gen
+      else return State_body_hash.dummy
+    in
+    {tag; public_key; amount; state_body_hash}
 
   let length_in_triples =
     Tag.length_in_triples + Public_key.Compressed.length_in_triples
-    + Currency.Amount.length_in_triples
+    + Currency.Amount.length_in_triples + State_body_hash.length_in_triples
 
-  let to_hlist {tag; public_key; amount} = H_list.[tag; public_key; amount]
+  let to_hlist {tag; public_key; amount; state_body_hash} =
+    H_list.[tag; public_key; amount; state_body_hash]
 
   let spec =
-    Data_spec.[Tag.typ; Public_key.Compressed.typ; Currency.Amount.typ]
+    Data_spec.
+      [ Tag.typ
+      ; Public_key.Compressed.typ
+      ; Currency.Amount.typ
+      ; State_body_hash.typ ]
 
   let typ =
     Typ.of_hlistable spec ~var_to_hlist:to_hlist ~value_to_hlist:to_hlist
-      ~var_of_hlist:(fun H_list.[tag; public_key; amount] ->
-        {tag; public_key; amount} )
-      ~value_of_hlist:(fun H_list.[tag; public_key; amount] ->
-        {tag; public_key; amount} )
+      ~var_of_hlist:(fun H_list.[tag; public_key; amount; state_body_hash] ->
+        {tag; public_key; amount; state_body_hash} )
+      ~value_of_hlist:(fun H_list.[tag; public_key; amount; state_body_hash] ->
+        {tag; public_key; amount; state_body_hash} )
 
   let of_user_command_payload_body = function
     | User_command_payload.Body.Payment {receiver; amount} ->
-        {tag= Tag.Payment; public_key= receiver; amount}
+        { tag= Tag.Payment
+        ; public_key= receiver
+        ; amount
+        ; state_body_hash= State_body_hash.dummy }
     | Stake_delegation (Set_delegate {new_delegate}) ->
         { tag= Tag.Stake_delegation
         ; public_key= new_delegate
-        ; amount= Currency.Amount.zero }
+        ; amount= Currency.Amount.zero
+        ; state_body_hash= State_body_hash.dummy }
 
   module Checked = struct
-    let constant ({tag; public_key; amount} : t) : var =
+    let constant ({tag; public_key; amount; state_body_hash} : t) : var =
       { tag= Tag.Checked.constant tag
       ; public_key= Public_key.Compressed.var_of_t public_key
-      ; amount= Currency.Amount.var_of_t amount }
+      ; amount= Currency.Amount.var_of_t amount
+      ; state_body_hash= State_body_hash.var_of_t state_body_hash }
 
-    let to_triples ({tag; public_key; amount} : var) =
-      let%map public_key = Public_key.Compressed.var_to_triples public_key in
+    let to_triples ({tag; public_key; amount; state_body_hash} : var) =
+      let%bind public_key = Public_key.Compressed.var_to_triples public_key in
+      let%map state_body_hash =
+        State_body_hash.var_to_triples state_body_hash
+      in
       Tag.Checked.to_triples tag @ public_key
       @ Currency.Amount.var_to_triples amount
+      @ state_body_hash
   end
 end
 
