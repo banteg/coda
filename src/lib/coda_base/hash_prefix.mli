@@ -34,6 +34,8 @@ val pending_coinbases : Tick.Pedersen.State.t
 
 val coinbase_stack_data : Tick.Pedersen.State.t
 
+val coinbase_stack_state_hash : Tick.Pedersen.State.t
+
 val coinbase : Tick.Pedersen.State.t
 
 val checkpoint_list : Tick.Pedersen.State.t
