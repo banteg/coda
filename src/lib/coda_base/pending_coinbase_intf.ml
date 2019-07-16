@@ -116,11 +116,11 @@ module type S = sig
 
   val merkle_root : t -> Hash.t
 
-  val handler : t -> is_new:bool -> (request -> response) Staged.t
+  val handler : t -> is_new_stack:bool -> (request -> response) Staged.t
 
-  val update_coinbase_stack : t -> Stack.t -> is_new:bool -> t Or_error.t
+  val update_coinbase_stack : t -> Stack.t -> is_new_stack:bool -> t Or_error.t
 
-  val latest_stack : t -> is_new:bool -> Stack.t Or_error.t
+  val latest_stack : t -> is_new_stack:bool -> Stack.t Or_error.t
 
   val oldest_stack : t -> Stack.t Or_error.t
 
@@ -149,7 +149,7 @@ module type S = sig
     val get : var -> Address.var -> (Stack.var, _) Tick.Checked.t
 
     (**
-       [update_stack t ~is_new updated_stack] implements the following spec:
+       [update_stack t ~is_new_stack updated_stack] implements the following spec:
        - gets the address[addr] of the latest stack or a new stack
        - finds a coinbase stack in [t] at path [addr] and pushes the coinbase_data on to the stack
        - returns a root [t'] of the tree
