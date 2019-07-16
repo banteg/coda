@@ -32,7 +32,7 @@ val vrf_output : Tick.Pedersen.State.t
 
 val pending_coinbases : Tick.Pedersen.State.t
 
-val coinbase_stack : Tick.Pedersen.State.t
+val coinbase_stack_data : Tick.Pedersen.State.t
 
 val coinbase : Tick.Pedersen.State.t
 

@@ -354,7 +354,9 @@ module Base = struct
     let proposer = payload.body.public_key in
     let%bind is_coinbase = Transaction_union.Tag.Checked.is_coinbase tag in
     let%bind pending_coinbase_stack_after =
-      let coinbase = (proposer, payload.body.amount) in
+      let coinbase =
+        (proposer, payload.body.amount, payload.body.state_body_hash)
+      in
       let%bind stack' =
         Pending_coinbase.Stack.Checked.push pending_coinbase_stack_before
           coinbase

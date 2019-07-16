@@ -124,6 +124,10 @@ module type S = sig
     type var
 
     val data_hash : t -> Hash.t
+
+    val stack : t -> Stack.t
+
+    val state_hash : t -> State_hash.t
   end
 
   val create : unit -> t Or_error.t
