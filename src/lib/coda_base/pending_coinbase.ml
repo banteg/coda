@@ -320,11 +320,19 @@ module Hash_builder = struct
 
   let merge ~height (h1 : t) (h2 : t) =
     let open Tick.Pedersen in
-    State.digest
-      (hash_fold
-         Hash_prefix.coinbase_merkle_tree.(height)
-         Fold.(Digest.fold (h1 :> field) +> Digest.fold (h2 :> field)))
-    |> of_hash
+    eprintf
+      !"UNCHECKED AT HEIGHT: %d, GOT HASHES H1: %{sexp:t} AND H2: %{sexp:t}\n\
+        %!"
+      height h1 h2 ;
+    let result =
+      State.digest
+        (hash_fold
+           Hash_prefix.coinbase_merkle_tree.(height)
+           Fold.(Digest.fold (h1 :> field) +> Digest.fold (h2 :> field)))
+      |> of_hash
+    in
+    eprintf !"UNCHECKED HASH RESULT: %{sexp:t}\n%!" result ;
+    result
 
   let empty_hash =
     let open Tick.Pedersen in
@@ -623,6 +631,17 @@ struct
           let typ = Pedersen.Checked.Digest.typ
 
           let hash ~height h1 h2 =
+            let%bind () =
+              as_prover
+                As_prover.(
+                  let%bind h1' = read Pedersen.Checked.Digest.typ h1 in
+                  let%map h2' = read Pedersen.Checked.Digest.typ h2 in
+                  eprintf
+                    !"CHECKED AT HEIGHT: %d, GOT HASHES H1: %{sexp: Field.t} \
+                      AND H2: %{sexp: Field.t}\n\
+                      %!"
+                    height h1' h2')
+            in
             let to_triples (bs : Pedersen.Checked.Digest.Unpacked.var) =
               Bitstring_lib.Bitstring.pad_to_triple_list
                 ~default:Boolean.false_
@@ -630,9 +649,18 @@ struct
             in
             let%bind h1 = Pedersen.Checked.Digest.choose_preimage h1
             and h2 = Pedersen.Checked.Digest.choose_preimage h2 in
-            Pedersen.Checked.digest_triples
-              ~init:Hash_prefix.coinbase_merkle_tree.(height)
-              (to_triples h1 @ to_triples h2)
+            let%bind result =
+              Pedersen.Checked.digest_triples
+                ~init:Hash_prefix.coinbase_merkle_tree.(height)
+                (to_triples h1 @ to_triples h2)
+            in
+            let%map () =
+              as_prover
+                As_prover.(
+                  let%map result' = read typ result in
+                  eprintf !"CHECKED HASH RESULT: %{sexp: Field.t}\n%!" result')
+            in
+            result
 
           let assert_equal h1 h2 = Field.Checked.Assert.equal h1 h2
 
@@ -690,53 +718,50 @@ struct
         request_witness Address.typ
           As_prover.(map (return ()) ~f:(fun _ -> Find_index_of_newest_stack))
       in
-      eprintf "PT 1\n%!" ;
       let equal_to_zero x = Amount.(equal_var x (var_of_t zero)) in
-      eprintf "PT 2\n%!" ;
       let chain if_ b ~then_ ~else_ =
         let%bind then_ = then_ and else_ = else_ in
         if_ b ~then_ ~else_
       in
-      eprintf "PT 3\n%!" ;
       handle
         (Merkle_tree.modify_req ~depth (Hash.var_to_hash_packed t) addr
            ~f:(fun stack ->
-             eprintf "PT 4\n%!" ;
              let%bind () =
                as_prover
                  As_prover.(
                    let%map value = read State_hash.typ stack.state_hash in
                    eprintf !"BEFORE CHECKED: %{sexp: State_hash.t}\n%!" value)
              in
-             eprintf "PT 5\n%!" ;
              let total_coinbase_amount =
                Currency.Amount.var_of_t Coda_compile_config.coinbase
              in
-             eprintf "PT 6\n%!" ;
              let%bind rem_amount =
                Currency.Amount.Checked.sub total_coinbase_amount amount
              in
-             eprintf "PT 7\n%!" ;
              let%bind amount1_equal_to_zero = equal_to_zero amount in
              let%bind amount2_equal_to_zero = equal_to_zero rem_amount in
              (*TODO:Optimize here since we are pushing twice to the same stack*)
-             eprintf "PT 8\n%!" ;
              let%bind stack_with_amount1 =
                Stack.Checked.push stack (pk, amount, state_body_hash)
              in
-             eprintf "PT 9\n%!" ;
              let%bind stack_with_amount2 =
                Stack.Checked.push stack_with_amount1
                  (pk, rem_amount, state_body_hash)
              in
-             eprintf "PT 10\n%!" ;
              let%bind () =
                as_prover
                  As_prover.(
-                   let%map value =
+                   let%bind v1 =
                      read State_hash.typ stack_with_amount1.state_hash
                    in
-                   eprintf !"AFTER CHECKED: %{sexp: State_hash.t}\n\n%!" value)
+                   let%map v2 =
+                     read State_hash.typ stack_with_amount2.state_hash
+                   in
+                   eprintf
+                     !"AFTER CHECKED: V1: %{sexp: State_hash.t} V2: %{sexp: \
+                       State_hash.t}\n\n\
+                       %!"
+                     v1 v2)
              in
              chain Stack.if_ amount1_equal_to_zero ~then_:(return stack)
                ~else_:
@@ -1098,23 +1123,23 @@ let%test_unit "Checked_tree = Unchecked_tree" =
             |> Or_error.ok_exn
       in
       let f_add_coinbase = Checked.add_coinbase in
-      let checked =
+      let checked_merkle_root =
         let comp =
           let open Snark_params.Tick in
           let coinbase_var = Coinbase_data.(var_of_t coinbase_data) in
-          let%map res =
+          let%map result =
             handle
               (f_add_coinbase
                  (Hash.var_of_t (merkle_root pending_coinbases))
                  coinbase_var)
               (unstage (handler pending_coinbases ~is_new_stack:true))
           in
-          As_prover.read Hash.typ res
+          As_prover.read Hash.typ result
         in
         let (), x = Or_error.ok_exn (run_and_check comp ()) in
         x
       in
-      assert (Hash.equal (merkle_root unchecked) checked) )
+      assert (Hash.equal (merkle_root unchecked) checked_merkle_root) )
 
 (*
 let%test_unit "push and pop multiple stacks" =
