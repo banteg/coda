@@ -123,6 +123,7 @@ jobs:
                  no_output_timeout: 1h
                  environment: 
                   DUNE_PROFILE: testnet_postake_medium_curves
+                  CODA_CI_DIE_IF_KEYS_OUTDATED: true
            - run:
                  name: Record Constraint System Digests
                  command: ./scripts/skip_if_only_frontend.sh bash -c 'src/_build/default/app/cli/src/coda.exe client constraint-system-digests | tee /tmp/constraint-system-digests.log'
