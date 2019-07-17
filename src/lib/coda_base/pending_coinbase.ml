@@ -236,7 +236,7 @@ module Coinbase_stack_state_hash = struct
 
   let update_state_hash ~state_hash ~state_body_hash =
     (* this is the same computation for combining state hashes and state body hashes as
-       `Protocol_state.hash_abstract', not available here because it would create 
+       `Protocol_state.hash_abstract', not available here because it would create
        a module dependency cycle
      *)
     let open Fold in
@@ -679,21 +679,6 @@ struct
         (Merkle_tree.get_req ~depth (Hash.var_to_hash_packed t) addr)
         reraise_merkle_requests
 
-    let update_state_hash ~(state_hash : Coinbase_stack_state_hash.var)
-        ~(state_body_hash : State_body_hash.var) =
-      let%bind state_hash_triples =
-        Coinbase_stack_state_hash.var_to_triples state_hash
-      in
-      let%bind state_body_hash_triples =
-        State_body_hash.var_to_triples state_body_hash
-      in
-      let triples = state_hash_triples @ state_body_hash_triples in
-      let%map digest =
-        Snark_params.Tick.Pedersen.Checked.digest_triples
-          ~init:Hash_prefix.protocol_state triples
-      in
-      Coinbase_stack_state_hash.var_of_hash_packed digest
-
     let%snarkydef add_coinbase t (pk, amount, state_body_hash) =
       let%bind () =
         as_prover
@@ -737,35 +722,26 @@ struct
              (*TODO:Optimize here since we are pushing twice to the same stack*)
              eprintf "PT 8\n%!" ;
              let%bind stack_with_amount1 =
-               Coinbase_stack_data.Checked.push stack.data
-                 (pk, amount, state_body_hash)
+               Stack.Checked.push stack (pk, amount, state_body_hash)
              in
              eprintf "PT 9\n%!" ;
              let%bind stack_with_amount2 =
-               Coinbase_stack_data.Checked.push stack_with_amount1
+               Stack.Checked.push stack_with_amount1
                  (pk, rem_amount, state_body_hash)
              in
              eprintf "PT 10\n%!" ;
-             let%bind new_state_hash =
-               update_state_hash ~state_hash:stack.state_hash ~state_body_hash
-             in
-             eprintf "PT 11\n%!" ;
              let%bind () =
                as_prover
                  As_prover.(
-                   let%map value = read State_hash.typ new_state_hash in
+                   let%map value =
+                     read State_hash.typ stack_with_amount1.state_hash
+                   in
                    eprintf !"AFTER CHECKED: %{sexp: State_hash.t}\n\n%!" value)
              in
              chain Stack.if_ amount1_equal_to_zero ~then_:(return stack)
                ~else_:
-                 (Stack.if_ amount2_equal_to_zero
-                    ~then_:
-                      Stack.Poly.
-                        {data= stack_with_amount1; state_hash= new_state_hash}
-                    ~else_:
-                      Stack.Poly.
-                        {data= stack_with_amount2; state_hash= new_state_hash})
-         ))
+                 (Stack.if_ amount2_equal_to_zero ~then_:stack_with_amount1
+                    ~else_:stack_with_amount2) ))
         reraise_merkle_requests
       >>| Hash.var_of_hash_packed
 
@@ -1112,14 +1088,14 @@ let%test_unit "Checked_tree = Unchecked_tree" =
         if Amount.equal coinbase.amount Amount.zero then pending_coinbases
         else
           let interim_tree =
+            do_print_state_hash := true ;
             add_coinbase pending_coinbases ~coinbase ~is_new_stack:true
             |> Or_error.ok_exn
           in
           if Amount.equal coinbase2.amount Amount.zero then interim_tree
-          else (
-            do_print_state_hash := true ;
+          else
             add_coinbase interim_tree ~coinbase:coinbase2 ~is_new_stack:false
-            |> Or_error.ok_exn )
+            |> Or_error.ok_exn
       in
       let f_add_coinbase = Checked.add_coinbase in
       let checked =
