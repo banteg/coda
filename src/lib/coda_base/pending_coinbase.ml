@@ -302,8 +302,7 @@ module Coinbase_stack_state_hash = struct
       let%bind with_t =
         let%bind triples = var_to_triples t in
         Pedersen.Checked.Section.extend Pedersen.Checked.Section.empty triples
-          ~start:
-            (Hash_prefix.length_in_triples + Coinbase_data.length_in_triples)
+          ~start:(Hash_prefix.length_in_triples + length_in_triples)
       in
       let%map s =
         Pedersen.Checked.Section.disjoint_union_exn state_hash_section with_t
@@ -478,7 +477,7 @@ struct
       { Poly.data= Coinbase_stack_data.empty
       ; state_hash= Coinbase_stack_state_hash.empty }
 
-    let equal_data t1 t2 = Coinbase_stack_data.equal t1.Poly.data t2.Poly.data
+    (*    let equal_data t1 t2 = Coinbase_stack_data.equal t1.Poly.data t2.Poly.data *)
 
     let push t (cb : Coinbase.t) =
       let data = Coinbase_stack_data.push t.Poly.data cb in
@@ -696,37 +695,66 @@ struct
       Coinbase_stack_state_hash.var_of_hash_packed digest
 
     let%snarkydef add_coinbase t (pk, amount, state_body_hash) =
+      let%bind () =
+        as_prover
+          As_prover.(
+            let%map value = read Hash.typ t in
+            eprintf !"CHECKED ADD CB WITH ROOT: %{sexp: Hash.t}\n%!" value)
+      in
       let%bind addr =
         request_witness Address.typ
           As_prover.(map (return ()) ~f:(fun _ -> Find_index_of_newest_stack))
       in
+      eprintf "PT 1\n%!" ;
       let equal_to_zero x = Amount.(equal_var x (var_of_t zero)) in
+      eprintf "PT 2\n%!" ;
       let chain if_ b ~then_ ~else_ =
         let%bind then_ = then_ and else_ = else_ in
         if_ b ~then_ ~else_
       in
+      eprintf "PT 3\n%!" ;
       handle
         (Merkle_tree.modify_req ~depth (Hash.var_to_hash_packed t) addr
            ~f:(fun stack ->
+             eprintf "PT 4\n%!" ;
+             let%bind () =
+               as_prover
+                 As_prover.(
+                   let%map value = read State_hash.typ stack.state_hash in
+                   eprintf !"BEFORE CHECKED: %{sexp: State_hash.t}\n%!" value)
+             in
+             eprintf "PT 5\n%!" ;
              let total_coinbase_amount =
                Currency.Amount.var_of_t Coda_compile_config.coinbase
              in
+             eprintf "PT 6\n%!" ;
              let%bind rem_amount =
                Currency.Amount.Checked.sub total_coinbase_amount amount
              in
+             eprintf "PT 7\n%!" ;
              let%bind amount1_equal_to_zero = equal_to_zero amount in
              let%bind amount2_equal_to_zero = equal_to_zero rem_amount in
              (*TODO:Optimize here since we are pushing twice to the same stack*)
+             eprintf "PT 8\n%!" ;
              let%bind stack_with_amount1 =
                Coinbase_stack_data.Checked.push stack.data
                  (pk, amount, state_body_hash)
              in
+             eprintf "PT 9\n%!" ;
              let%bind stack_with_amount2 =
                Coinbase_stack_data.Checked.push stack_with_amount1
                  (pk, rem_amount, state_body_hash)
              in
+             eprintf "PT 10\n%!" ;
              let%bind new_state_hash =
                update_state_hash ~state_hash:stack.state_hash ~state_body_hash
+             in
+             eprintf "PT 11\n%!" ;
+             let%bind () =
+               as_prover
+                 As_prover.(
+                   let%map value = read State_hash.typ new_state_hash in
+                   eprintf !"AFTER CHECKED: %{sexp: State_hash.t}\n\n%!" value)
              in
              chain Stack.if_ amount1_equal_to_zero ~then_:(return stack)
                ~else_:
@@ -891,7 +919,7 @@ struct
       {t with pos_list= t.new_pos :: t.pos_list; new_pos}
     else Ok t
 
-  let latest_Stack_id (t : t) ~is_new_stack =
+  let latest_stack_id (t : t) ~is_new_stack =
     if is_new_stack then Ok t.new_pos
     else
       match List.hd t.pos_list with
@@ -902,14 +930,14 @@ struct
 
   let latest_stack (t : t) ~is_new_stack =
     let open Or_error.Let_syntax in
-    let%bind key = latest_Stack_id t ~is_new_stack in
+    let%bind key = latest_stack_id t ~is_new_stack in
     Or_error.try_with (fun () ->
         let index = Merkle_tree.find_index_exn t.tree key in
         Merkle_tree.get_exn t.tree index )
 
-  let oldest_Stack_id (t : t) = List.last t.pos_list
+  let oldest_stack_id (t : t) = List.last t.pos_list
 
-  let remove_oldest_Stack_id t =
+  let remove_oldest_stack_id t =
     match List.rev t with
     | [] ->
         Or_error.error_string "No coinbase stack-with-state-hash to pop"
@@ -918,16 +946,28 @@ struct
 
   let oldest_stack t =
     let open Or_error.Let_syntax in
-    let key = Option.value ~default:Stack_id.zero (oldest_Stack_id t) in
+    let key = Option.value ~default:Stack_id.zero (oldest_stack_id t) in
     let%bind index = find_index t key in
     get_stack t index
 
+  let do_print_state_hash = ref false
+
   let add_coinbase t ~coinbase ~is_new_stack =
     let open Or_error.Let_syntax in
-    let%bind key = latest_Stack_id t ~is_new_stack in
+    if !do_print_state_hash then
+      eprintf !"UNCHECKED WITH ROOT: %{sexp: Hash.t}\n%!" (merkle_root t) ;
+    let%bind key = latest_stack_id t ~is_new_stack in
     let%bind stack_index = find_index t key in
     let%bind stack_before = get_stack t stack_index in
+    if !do_print_state_hash then
+      eprintf
+        !"BEFORE UNCHECKED: %{sexp: State_hash.t}\n%!"
+        stack_before.state_hash ;
     let stack_after = Stack.push stack_before coinbase in
+    if !do_print_state_hash then
+      eprintf
+        !"AFTER UNCHECKED: %{sexp: State_hash.t}\n\n%!"
+        stack_after.state_hash ;
     let%bind t' = incr_index t ~is_new_stack in
     (* state hash that was paired with the "before" stack becomes previous state hash at top level *)
     set_stack
@@ -936,14 +976,14 @@ struct
 
   let update_coinbase_stack t stack ~is_new_stack =
     let open Or_error.Let_syntax in
-    let%bind key = latest_Stack_id t ~is_new_stack in
+    let%bind key = latest_stack_id t ~is_new_stack in
     let%bind stack_index = find_index t key in
     let%bind t' = incr_index t ~is_new_stack in
     set_stack t' stack_index stack
 
   let remove_coinbase_stack (t : t) =
     let open Or_error.Let_syntax in
-    let%bind oldest_stack, remaining = remove_oldest_Stack_id t.pos_list in
+    let%bind oldest_stack, remaining = remove_oldest_stack_id t.pos_list in
     let%bind stack_index = find_index t oldest_stack in
     let%bind stack = get_stack t stack_index in
     let%map t' = set_stack t stack_index Stack.empty in
@@ -975,7 +1015,7 @@ struct
         | Checked.Find_index_of_oldest_stack ->
             let stack_id =
               Option.value ~default:Stack_id.zero
-                (oldest_Stack_id !pending_coinbase)
+                (oldest_stack_id !pending_coinbase)
             in
             let index =
               find_index !pending_coinbase stack_id |> Or_error.ok_exn
@@ -983,7 +1023,7 @@ struct
             respond (Provide index)
         | Checked.Find_index_of_newest_stack ->
             let stack_id =
-              match latest_Stack_id !pending_coinbase ~is_new_stack with
+              match latest_stack_id !pending_coinbase ~is_new_stack with
               | Ok id ->
                   id
               | _ ->
@@ -1034,6 +1074,7 @@ let%test_unit "add stack + remove stack = initial tree " =
           assert (Hash.equal (merkle_root after_del) init) ;
           Async.Deferred.return () ) )
 
+(*
 let%test_unit "Checked_stack = Unchecked_stack" =
   let open Quickcheck in
   test ~trials:20 (Generator.tuple2 Stack.gen Coinbase.gen)
@@ -1051,7 +1092,7 @@ let%test_unit "Checked_stack = Unchecked_stack" =
         x
       in
       assert (Stack.equal unchecked checked) )
-
+ *)
 let%test_unit "Checked_tree = Unchecked_tree" =
   let open Quickcheck in
   let pending_coinbases = create () |> Or_error.ok_exn in
@@ -1075,22 +1116,21 @@ let%test_unit "Checked_tree = Unchecked_tree" =
             |> Or_error.ok_exn
           in
           if Amount.equal coinbase2.amount Amount.zero then interim_tree
-          else
+          else (
+            do_print_state_hash := true ;
             add_coinbase interim_tree ~coinbase:coinbase2 ~is_new_stack:false
-            |> Or_error.ok_exn
+            |> Or_error.ok_exn )
       in
       let f_add_coinbase = Checked.add_coinbase in
       let checked =
         let comp =
           let open Snark_params.Tick in
-          let pk, _, _ = Coinbase_data.(var_of_t coinbase_data) in
+          let coinbase_var = Coinbase_data.(var_of_t coinbase_data) in
           let%map res =
             handle
               (f_add_coinbase
                  (Hash.var_of_t (merkle_root pending_coinbases))
-                 ( pk
-                 , Amount.var_of_t coinbase.amount
-                 , State_body_hash.(var_of_t dummy) ))
+                 coinbase_var)
               (unstage (handler pending_coinbases ~is_new_stack:true))
           in
           As_prover.read Hash.typ res
@@ -1100,6 +1140,7 @@ let%test_unit "Checked_tree = Unchecked_tree" =
       in
       assert (Hash.equal (merkle_root unchecked) checked) )
 
+(*
 let%test_unit "push and pop multiple stacks" =
   let open Quickcheck in
   let max_coinbase_amount = Coda_compile_config.coinbase in
@@ -1188,3 +1229,4 @@ let%test_unit "push and pop multiple stacks" =
   in
   let coinbase_lists_gen = Quickcheck.Generator.(list (list Coinbase.gen)) in
   test ~trials:100 coinbase_lists_gen ~f:add_remove_check
+ *)
