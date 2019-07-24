@@ -54,6 +54,7 @@ module type S = sig
     ; initial_peers: Host_and_port.t list
     ; peers: Peer.Hash_set.t
     ; peers_by_ip: (Unix.Inet_addr.t, Peer.t list) Hashtbl.t
+    ; disconnected_peers: Peer.Hash_set.t
     ; connections:
         ( Unix.Inet_addr.t
         , (Uuid.t, Connection_with_state.t) Hashtbl.t )
@@ -107,6 +108,7 @@ module Make (Message : Message_intf) : S with type msg := Message.msg = struct
     ; initial_peers: Host_and_port.t list
     ; peers: Peer.Hash_set.t
     ; peers_by_ip: (Unix.Inet_addr.t, Peer.t list) Hashtbl.t
+    ; disconnected_peers: Peer.Hash_set.t
     ; connections:
         ( Unix.Inet_addr.t
         , (Uuid.t, Connection_with_state.t) Hashtbl.t )
@@ -164,6 +166,22 @@ module Make (Message : Message_intf) : S with type msg := Message.msg = struct
       | Some ip_peers ->
           List.filter ip_peers ~f:(fun ip_peer -> not (Peer.equal ip_peer peer)) )
 
+  let mark_peer_disconnected t peer =
+    remove_peer t peer ;
+    Logger.info t.logger ~module_:__MODULE__ ~location:__LOC__
+      !"Moving peer to disconnected peer set : %{sexp: Peer.t}"
+      peer ;
+    Hash_set.add t.disconnected_peers peer
+
+  let mark_peer_connected t peer =
+    remove_peer t peer ;
+    Logger.info t.logger ~module_:__MODULE__ ~location:__LOC__
+      !"Moving disconnected peer to peer set : %{sexp: Peer.t}"
+      peer ;
+    Hash_set.remove t.disconnected_peers peer ;
+    Hash_set.add t.peers peer ;
+    Hashtbl.add_multi t.peers_by_ip ~key:peer.host ~data:peer
+
   let is_unix_errno errno unix_errno =
     Int.equal (Unix.Error.compare errno unix_errno) 0
 
@@ -220,6 +238,8 @@ module Make (Message : Message_intf) : S with type msg := Message.msg = struct
       >>= function
       | Ok (Ok result) ->
           (* call succeeded, result is valid *)
+          if Hash_set.mem t.disconnected_peers peer then
+            mark_peer_connected t peer ;
           return (Ok result)
       | Ok (Error err) -> (
           (* call succeeded, result is an error *)
@@ -282,7 +302,8 @@ module Make (Message : Message_intf) : S with type msg := Message.msg = struct
                       ( Outgoing_connection_error
                       , Some ("Connection refused", []) ))
               in
-              remove_peer t peer ; Or_error.of_exn exn
+              mark_peer_disconnected t peer ;
+              Or_error.of_exn exn
           | _ ->
               Logger.error t.logger ~module_:__MODULE__ ~location:__LOC__
                 "RPC call raised an exception: $exn"
@@ -327,7 +348,11 @@ module Make (Message : Message_intf) : S with type msg := Message.msg = struct
                 ; ("peer", Peer.to_yojson peer) ] )
 
   let broadcast_random t n msg =
-    let selected_peers = random_sublist (Hash_set.to_list t.peers) n in
+    (* if no peers available, broadcast to disconnected peers *)
+    let peers =
+      if Hash_set.is_empty t.peers then t.disconnected_peers else t.peers
+    in
+    let selected_peers = random_sublist (Hash_set.to_list peers) n in
     broadcast_selected t selected_peers msg
 
   let create (config : Config.t)
@@ -366,6 +391,7 @@ module Make (Message : Message_intf) : S with type msg := Message.msg = struct
           ; peers= Peer.Hash_set.create ()
           ; initial_peers= config.initial_peers
           ; peers_by_ip= Hashtbl.create (module Unix.Inet_addr)
+          ; disconnected_peers= Peer.Hash_set.create ()
           ; connections= Hashtbl.create (module Unix.Inet_addr)
           ; max_concurrent_connections= config.max_concurrent_connections
           ; first_connect }
@@ -450,8 +476,8 @@ module Make (Message : Message_intf) : S with type msg := Message.msg = struct
                   Deferred.unit
               | Disconnect peers ->
                   Logger.info t.logger ~module_:__MODULE__ ~location:__LOC__
-                    "Some peers disconnected %s" (Peer.pretty_list peers) ;
-                  List.iter peers ~f:(remove_peer t) ;
+                    "Some peers disconnected: %s" (Peer.pretty_list peers) ;
+                  List.iter peers ~f:(mark_peer_disconnected t) ;
                   Deferred.unit )
             |> ignore ) ;
         let%map _ =
@@ -575,11 +601,22 @@ module Make (Message : Message_intf) : S with type msg := Message.msg = struct
         let%map () = broadcast_selected t selected msg in
         if List.length !to_broadcast = 0 then `Done else `Continue )
 
-  let random_peers t n = random_sublist (Hash_set.to_list t.peers) n
+  let random_peers t n =
+    (* choose disconnected peers if no other peers available *)
+    let peers =
+      if Hash_set.is_empty t.peers then t.disconnected_peers else t.peers
+    in
+    random_sublist (Hash_set.to_list peers) n
 
   let random_peers_except t n ~(except : Peer.Hash_set.t) =
-    let new_peers = Hash_set.(diff t.peers except |> to_list) in
-    random_sublist new_peers n
+    (* choose disconnected peers if no other peers available *)
+    let new_peers =
+      let open Hash_set in
+      let diff_peers = diff t.peers except in
+      if is_empty diff_peers then diff t.disconnected_peers except
+      else diff_peers
+    in
+    random_sublist (Hash_set.to_list new_peers) n
 
   let query_peer t (peer : Peer.t) rpc query =
     Logger.trace t.logger ~module_:__MODULE__ ~location:__LOC__
