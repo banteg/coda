@@ -481,7 +481,9 @@ module Make (Message : Message_intf) : S with type msg := Message.msg = struct
                       Coda_metrics.(Gauge.inc_one Network.peers) ;
                       Hash_set.add t.peers peer ;
                       Hashtbl.add_multi t.peers_by_ip ~key:peer.host ~data:peer ;
-                      if Hash_set.length t.peers >= disconnect_clear_threshold
+                      if
+                        Int.equal (Hash_set.length t.peers)
+                          disconnect_clear_threshold
                       then Hash_set.clear t.disconnected_peers ) ;
                   Deferred.unit
               | Disconnect peers ->
