@@ -176,7 +176,7 @@ module Make (Message : Message_intf) : S with type msg := Message.msg = struct
       peer ;
     Hash_set.add t.disconnected_peers peer
 
-  let mark_peer_connected t peer =
+  let unmark_peer_disconnected t peer =
     remove_peer t peer ;
     Logger.info t.logger ~module_:__MODULE__ ~location:__LOC__
       !"Moving disconnected peer to peer set : %{sexp: Peer.t}"
@@ -185,16 +185,17 @@ module Make (Message : Message_intf) : S with type msg := Message.msg = struct
     Hash_set.add t.peers peer ;
     Hashtbl.add_multi t.peers_by_ip ~key:peer.host ~data:peer
 
-  let mark_disconnected_peers_connected t =
-    Hash_set.iter t.disconnected_peers ~f:(mark_peer_connected t)
+  let unmark_all_disconnected_peers t =
+    Hash_set.iter t.disconnected_peers ~f:(unmark_peer_disconnected t)
 
   let is_unix_errno errno unix_errno =
     Int.equal (Unix.Error.compare errno unix_errno) 0
 
-  (* Create a socket bound to the correct IP, for outgoing connections. *)
-  let get_socket t =
-    let socket = Async.Socket.(create Type.tcp) in
-    (* Binding with a source port of 0 tells the kernel to pick a free one for
+  let get_socket_reader_writer t (peer : Peer.t) =
+    (* Create a socket bound to the correct IP, for outgoing connections. *)
+    let socket =
+      let unbound_socket = Async.Socket.(create Type.tcp) in
+      (* Binding with a source port of 0 tells the kernel to pick a free one for
        us. Because we're binding an address and port before the kernel knows
        whether this will be a listen socket or an outgoing socket, it won't
        allocate the same source port twice, even when the destination IP will be
@@ -204,8 +205,49 @@ module Make (Message : Message_intf) : S with type msg := Message.msg = struct
        but it only works on Linux. I think we don't need to worry about it,
        there are a lot of ephemeral ports and we don't make very many
        simultaneous connections.
-    *)
-    Async.Socket.bind_inet socket @@ `Inet (t.addrs_and_ports.bind_ip, 0)
+      *)
+      Async.Socket.bind_inet unbound_socket
+      @@ `Inet (t.addrs_and_ports.bind_ip, 0)
+    in
+    let peer_addr = `Inet (peer.host, peer.communication_port) in
+    let%map connected_socket = Async.Socket.connect socket peer_addr in
+    let fd = Socket.fd connected_socket in
+    (Reader.create fd, Writer.create fd)
+
+  let close_connection reader writer =
+    Writer.close writer ~force_close:(Clock.after (sec 30.))
+    >>= fun () -> Reader.close reader
+
+  (* see if we can connect to a disconnected peer, every so often *)
+  let retry_disconnected_peer t =
+    let rec loop () =
+      let%bind () = Async.after (Time.Span.of_sec 30.0) in
+      let%bind () =
+        if
+          Hash_set.is_empty t.peers
+          && not (Hash_set.is_empty t.disconnected_peers)
+        then (
+          let peer =
+            List.random_element_exn (Hash_set.to_list t.disconnected_peers)
+          in
+          let%bind reader, writer = get_socket_reader_writer t peer in
+          let%bind conn_result =
+            Rpc.Connection.create reader writer ~connection_state:(fun _ -> ())
+          in
+          let%map () = close_connection reader writer in
+          match conn_result with
+          | Error _ ->
+              ()
+          | Ok _ ->
+              Logger.info t.logger ~module_:__MODULE__ ~location:__LOC__
+                !"Reconnected to a random disconnected peer: %{sexp: Peer.t}"
+                peer ;
+              unmark_all_disconnected_peers t )
+        else return ()
+      in
+      loop ()
+    in
+    loop ()
 
   let try_call_rpc t (peer : Peer.t) dispatch query =
     (* use error collection, close connection strategy of Tcp.with_connection *)
@@ -216,19 +258,9 @@ module Make (Message : Message_intf) : S with type msg := Message.msg = struct
         [ choice (Monitor.get_next_error monitor) (fun e -> Error e)
         ; choice (try_with ~name:"Tcp.collect_errors" f) Fn.id ]
     in
-    let close_connection reader writer =
-      Writer.close writer ~force_close:(Clock.after (sec 30.))
-      >>= fun () -> Reader.close reader
-    in
     let call () =
       try_with (fun () ->
-          let socket = get_socket t in
-          let peer_addr = `Inet (peer.host, peer.communication_port) in
-          let%bind connected_socket = Async.Socket.connect socket peer_addr in
-          let reader, writer =
-            let fd = Socket.fd connected_socket in
-            (Reader.create fd, Writer.create fd)
-          in
+          let%bind reader, writer = get_socket_reader_writer t peer in
           let run_query () =
             create_connection_with_menu peer reader writer
             >>=? fun conn -> dispatch conn query
@@ -244,11 +276,13 @@ module Make (Message : Message_intf) : S with type msg := Message.msg = struct
       >>= function
       | Ok (Ok result) ->
           (* call succeeded, result is valid *)
-          if Hash_set.mem t.disconnected_peers peer then
-            (* one disconnected peer was able to connect
-               optimistically, mark all disconnected peers as peers
-            *)
-            mark_disconnected_peers_connected t ;
+          if Hash_set.mem t.disconnected_peers peer then (
+            (* optimistically, mark all disconnected peers as peers *)
+            Logger.info t.logger ~module_:__MODULE__ ~location:__LOC__
+              !"On RPC call, reconnected to a disconnected peer: %{sexp: \
+                Peer.t}"
+              peer ;
+            unmark_all_disconnected_peers t ) ;
           return (Ok result)
       | Ok (Error err) -> (
           (* call succeeded, result is an error *)
@@ -428,6 +462,7 @@ module Make (Message : Message_intf) : S with type msg := Message.msg = struct
                        Connection_with_state.value_map conn_state
                          ~when_allowed:(fun _ -> Connection_with_state.Banned)
                          ~when_banned:Banned ) )) ;
+        don't_wait_for (retry_disconnected_peer t) ;
         trace_task "rebroadcasting messages" (fun () ->
             don't_wait_for
               (Linear_pipe.iter_unordered ~max_concurrency:64 broadcast_reader
