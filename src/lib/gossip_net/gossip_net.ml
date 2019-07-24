@@ -47,6 +47,7 @@ module type S = sig
     { timeout: Time.Span.t
     ; logger: Logger.t
     ; trust_system: Trust_system.t
+    ; conf_dir: string
     ; target_peer_count: int
     ; broadcast_writer: msg Linear_pipe.Writer.t
     ; received_reader: msg Envelope.Incoming.t Strict_pipe.Reader.t
@@ -55,6 +56,7 @@ module type S = sig
     ; peers: Peer.Hash_set.t
     ; peers_by_ip: (Unix.Inet_addr.t, Peer.t list) Hashtbl.t
     ; disconnected_peers: Peer.Hash_set.t
+    ; mutable membership: Membership.t
     ; connections:
         ( Unix.Inet_addr.t
         , (Uuid.t, Connection_with_state.t) Hashtbl.t )
@@ -101,6 +103,7 @@ module Make (Message : Message_intf) : S with type msg := Message.msg = struct
     { timeout: Time.Span.t
     ; logger: Logger.t
     ; trust_system: Trust_system.t
+    ; conf_dir: string
     ; target_peer_count: int
     ; broadcast_writer: Message.msg Linear_pipe.Writer.t
     ; received_reader: Message.msg Envelope.Incoming.t Strict_pipe.Reader.t
@@ -109,6 +112,7 @@ module Make (Message : Message_intf) : S with type msg := Message.msg = struct
     ; peers: Peer.Hash_set.t
     ; peers_by_ip: (Unix.Inet_addr.t, Peer.t list) Hashtbl.t
     ; disconnected_peers: Peer.Hash_set.t
+    ; mutable membership: Membership.t
     ; connections:
         ( Unix.Inet_addr.t
         , (Uuid.t, Connection_with_state.t) Hashtbl.t )
@@ -176,17 +180,56 @@ module Make (Message : Message_intf) : S with type msg := Message.msg = struct
       peer ;
     Hash_set.add t.disconnected_peers peer
 
-  let unmark_peer_disconnected t peer =
-    remove_peer t peer ;
-    Logger.info t.logger ~module_:__MODULE__ ~location:__LOC__
-      !"Moving disconnected peer to peer set : %{sexp: Peer.t}"
-      peer ;
-    Hash_set.remove t.disconnected_peers peer ;
-    Hash_set.add t.peers peer ;
-    Hashtbl.add_multi t.peers_by_ip ~key:peer.host ~data:peer
+  let record_peer_events t =
+    let open Peer.Event in
+    trace_task "peer events" (fun () ->
+        Linear_pipe.iter_unordered ~max_concurrency:64
+          (Membership.changes t.membership) ~f:(function
+          | Connect peers ->
+              Ivar.fill_if_empty t.first_connect () ;
+              Logger.info t.logger ~module_:__MODULE__ ~location:__LOC__
+                !"Connected to some peers [%s]"
+                (Peer.pretty_list peers) ;
+              List.iter peers ~f:(fun peer ->
+                  Coda_metrics.(Gauge.inc_one Network.peers) ;
+                  Hash_set.add t.peers peer ;
+                  Hashtbl.add_multi t.peers_by_ip ~key:peer.host ~data:peer ;
+                  if
+                    Int.equal (Hash_set.length t.peers)
+                      disconnect_clear_threshold
+                  then Hash_set.clear t.disconnected_peers ) ;
+              Deferred.unit
+          | Disconnect peers ->
+              Logger.info t.logger ~module_:__MODULE__ ~location:__LOC__
+                "Some peers disconnected: %s" (Peer.pretty_list peers) ;
+              List.iter peers ~f:(mark_peer_disconnected t) ;
+              Deferred.unit )
+        |> ignore )
 
   let unmark_all_disconnected_peers t =
-    Hash_set.iter t.disconnected_peers ~f:(unmark_peer_disconnected t)
+    Logger.info t.logger ~module_:__MODULE__ ~location:__LOC__
+      !"Clearing disconnected peer set : %{sexp: Peer.t list}"
+      (Hash_set.to_list t.disconnected_peers) ;
+    let disconnected_peers =
+      List.map
+        (Hash_set.to_list t.disconnected_peers)
+        ~f:Peer.to_communications_host_and_port
+    in
+    Hash_set.clear t.disconnected_peers ;
+    Logger.info t.logger ~module_:__MODULE__ ~location:__LOC__
+      "Restarting Kademlia" ;
+    let%bind () = Membership.stop t.membership in
+    let%map new_membership =
+      let initial_peers = t.initial_peers @ disconnected_peers in
+      Membership.connect ~node_addrs_and_ports:t.addrs_and_ports ~initial_peers
+        ~conf_dir:t.conf_dir ~logger:t.logger ~trust_system:t.trust_system
+    in
+    match new_membership with
+    | Ok membership ->
+        t.membership <- membership ;
+        record_peer_events t
+    | Error _ ->
+        failwith "Could not restart Kademlia"
 
   let is_unix_errno errno unix_errno =
     Int.equal (Unix.Error.compare errno unix_errno) 0
@@ -218,6 +261,13 @@ module Make (Message : Message_intf) : S with type msg := Message.msg = struct
     Writer.close writer ~force_close:(Clock.after (sec 30.))
     >>= fun () -> Reader.close reader
 
+  let collect_errors writer f =
+    let monitor = Writer.monitor writer in
+    ignore (Monitor.detach_and_get_error_stream monitor) ;
+    choose
+      [ choice (Monitor.get_next_error monitor) (fun e -> Error e)
+      ; choice (try_with ~name:"Tcp.collect_errors" f) Fn.id ]
+
   (* see if we can connect to a disconnected peer, every so often *)
   let retry_disconnected_peer t =
     let rec loop () =
@@ -231,13 +281,14 @@ module Make (Message : Message_intf) : S with type msg := Message.msg = struct
             List.random_element_exn (Hash_set.to_list t.disconnected_peers)
           in
           let%bind reader, writer = get_socket_reader_writer t peer in
-          let%bind conn_result =
+          let connect () =
             Rpc.Connection.create reader writer ~connection_state:(fun _ -> ())
           in
-          let%map () = close_connection reader writer in
+          let%bind conn_result = collect_errors writer connect in
+          let%bind () = close_connection reader writer in
           match conn_result with
           | Error _ ->
-              ()
+              return ()
           | Ok _ ->
               Logger.info t.logger ~module_:__MODULE__ ~location:__LOC__
                 !"Reconnected to a random disconnected peer: %{sexp: Peer.t}"
@@ -251,13 +302,6 @@ module Make (Message : Message_intf) : S with type msg := Message.msg = struct
 
   let try_call_rpc t (peer : Peer.t) dispatch query =
     (* use error collection, close connection strategy of Tcp.with_connection *)
-    let collect_errors writer f =
-      let monitor = Writer.monitor writer in
-      ignore (Monitor.detach_and_get_error_stream monitor) ;
-      choose
-        [ choice (Monitor.get_next_error monitor) (fun e -> Error e)
-        ; choice (try_with ~name:"Tcp.collect_errors" f) Fn.id ]
-    in
     let call () =
       try_with (fun () ->
           let%bind reader, writer = get_socket_reader_writer t peer in
@@ -276,14 +320,17 @@ module Make (Message : Message_intf) : S with type msg := Message.msg = struct
       >>= function
       | Ok (Ok result) ->
           (* call succeeded, result is valid *)
-          if Hash_set.mem t.disconnected_peers peer then (
-            (* optimistically, mark all disconnected peers as peers *)
-            Logger.info t.logger ~module_:__MODULE__ ~location:__LOC__
-              !"On RPC call, reconnected to a disconnected peer: %{sexp: \
-                Peer.t}"
-              peer ;
-            unmark_all_disconnected_peers t ) ;
-          return (Ok result)
+          let%map () =
+            if Hash_set.mem t.disconnected_peers peer then (
+              (* optimistically, mark all disconnected peers as peers *)
+              Logger.info t.logger ~module_:__MODULE__ ~location:__LOC__
+                !"On RPC call, reconnected to a disconnected peer: %{sexp: \
+                  Peer.t}"
+                peer ;
+              unmark_all_disconnected_peers t )
+            else return ()
+          in
+          Ok result
       | Ok (Error err) -> (
           (* call succeeded, result is an error *)
           Logger.error t.logger ~module_:__MODULE__ ~location:__LOC__
@@ -416,7 +463,6 @@ module Make (Message : Message_intf) : S with type msg := Message.msg = struct
                 (Printf.sprintf "Failed to connect to kademlia process: %s\n"
                    (Error.to_string_hum e))
         in
-        let peer_events = Membership.changes membership in
         let first_connect = Ivar.create () in
         let broadcast_reader, broadcast_writer = Linear_pipe.create () in
         let received_reader, received_writer =
@@ -427,6 +473,7 @@ module Make (Message : Message_intf) : S with type msg := Message.msg = struct
           { timeout= config.timeout
           ; logger= config.logger
           ; trust_system= config.trust_system
+          ; conf_dir= config.conf_dir
           ; target_peer_count= config.target_peer_count
           ; broadcast_writer
           ; received_reader
@@ -435,6 +482,7 @@ module Make (Message : Message_intf) : S with type msg := Message.msg = struct
           ; initial_peers= config.initial_peers
           ; peers_by_ip= Hashtbl.create (module Unix.Inet_addr)
           ; disconnected_peers= Peer.Hash_set.create ()
+          ; membership
           ; connections= Hashtbl.create (module Unix.Inet_addr)
           ; max_concurrent_connections= config.max_concurrent_connections
           ; first_connect }
@@ -504,29 +552,7 @@ module Make (Message : Message_intf) : S with type msg := Message.msg = struct
           Rpc.Implementations.create_exn ~implementations
             ~on_unknown_rpc:(`Call handle_unknown_rpc)
         in
-        trace_task "peer events" (fun () ->
-            Linear_pipe.iter_unordered ~max_concurrency:64 peer_events
-              ~f:(function
-              | Connect peers ->
-                  Ivar.fill_if_empty first_connect () ;
-                  Logger.info t.logger ~module_:__MODULE__ ~location:__LOC__
-                    !"Connected to some peers [%s]"
-                    (Peer.pretty_list peers) ;
-                  List.iter peers ~f:(fun peer ->
-                      Coda_metrics.(Gauge.inc_one Network.peers) ;
-                      Hash_set.add t.peers peer ;
-                      Hashtbl.add_multi t.peers_by_ip ~key:peer.host ~data:peer ;
-                      if
-                        Int.equal (Hash_set.length t.peers)
-                          disconnect_clear_threshold
-                      then Hash_set.clear t.disconnected_peers ) ;
-                  Deferred.unit
-              | Disconnect peers ->
-                  Logger.info t.logger ~module_:__MODULE__ ~location:__LOC__
-                    "Some peers disconnected: %s" (Peer.pretty_list peers) ;
-                  List.iter peers ~f:(mark_peer_disconnected t) ;
-                  Deferred.unit )
-            |> ignore ) ;
+        record_peer_events t ;
         let%map _ =
           Tcp.Server.create
             ~on_handler_error:
