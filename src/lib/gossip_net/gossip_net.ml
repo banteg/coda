@@ -136,6 +136,9 @@ module Make (Message : Message_intf) : S with type msg := Message.msg = struct
   (* OPTIMIZATION: use fast n choose k implementation - see python or old flow code *)
   let random_sublist xs n = List.take (List.permute xs) n
 
+  (* clear disconnect set if peer set is at least this large *)
+  let disconnect_clear_threshold = 3
+
   let create_connection_with_menu peer r w =
     match%bind Rpc.Connection.create r w ~connection_state:(fun _ -> peer) with
     | Error exn ->
@@ -477,8 +480,9 @@ module Make (Message : Message_intf) : S with type msg := Message.msg = struct
                   List.iter peers ~f:(fun peer ->
                       Coda_metrics.(Gauge.inc_one Network.peers) ;
                       Hash_set.add t.peers peer ;
-                      Hashtbl.add_multi t.peers_by_ip ~key:peer.host ~data:peer
-                  ) ;
+                      Hashtbl.add_multi t.peers_by_ip ~key:peer.host ~data:peer ;
+                      if Hash_set.length t.peers >= disconnect_clear_threshold
+                      then Hash_set.clear t.disconnected_peers ) ;
                   Deferred.unit
               | Disconnect peers ->
                   Logger.info t.logger ~module_:__MODULE__ ~location:__LOC__
