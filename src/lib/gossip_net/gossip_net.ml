@@ -182,6 +182,9 @@ module Make (Message : Message_intf) : S with type msg := Message.msg = struct
     Hash_set.add t.peers peer ;
     Hashtbl.add_multi t.peers_by_ip ~key:peer.host ~data:peer
 
+  let mark_disconnected_peers_connected t =
+    Hash_set.iter t.disconnected_peers ~f:(mark_peer_connected t)
+
   let is_unix_errno errno unix_errno =
     Int.equal (Unix.Error.compare errno unix_errno) 0
 
@@ -239,7 +242,10 @@ module Make (Message : Message_intf) : S with type msg := Message.msg = struct
       | Ok (Ok result) ->
           (* call succeeded, result is valid *)
           if Hash_set.mem t.disconnected_peers peer then
-            mark_peer_connected t peer ;
+            (* one disconnected peer was able to connect
+               optimistically, mark all disconnected peers as peers
+            *)
+            mark_disconnected_peers_connected t ;
           return (Ok result)
       | Ok (Error err) -> (
           (* call succeeded, result is an error *)
