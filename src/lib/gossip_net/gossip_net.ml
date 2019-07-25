@@ -234,7 +234,7 @@ module Make (Message : Message_intf) : S with type msg := Message.msg = struct
   let is_unix_errno errno unix_errno =
     Int.equal (Unix.Error.compare errno unix_errno) 0
 
-  let get_socket_reader_writer t (peer : Peer.t) =
+  let get_socket_reader_writer t peer =
     (* Create a socket bound to the correct IP, for outgoing connections. *)
     let socket =
       let unbound_socket = Async.Socket.(create Type.tcp) in
@@ -252,10 +252,12 @@ module Make (Message : Message_intf) : S with type msg := Message.msg = struct
       Async.Socket.bind_inet unbound_socket
       @@ `Inet (t.addrs_and_ports.bind_ip, 0)
     in
-    let peer_addr = `Inet (peer.host, peer.communication_port) in
-    let%map connected_socket = Async.Socket.connect socket peer_addr in
-    let fd = Socket.fd connected_socket in
-    (Reader.create fd, Writer.create fd)
+    let peer_addr = `Inet (peer.Peer.host, peer.communication_port) in
+    try
+      let%map connected_socket = Async.Socket.connect socket peer_addr in
+      let fd = Socket.fd connected_socket in
+      Ok (Reader.create fd, Writer.create fd)
+    with exn -> return @@ Error exn
 
   let close_connection reader writer =
     Writer.close writer ~force_close:(Clock.after (sec 30.))
@@ -276,24 +278,29 @@ module Make (Message : Message_intf) : S with type msg := Message.msg = struct
         if
           Hash_set.is_empty t.peers
           && not (Hash_set.is_empty t.disconnected_peers)
-        then (
+        then
           let peer =
             List.random_element_exn (Hash_set.to_list t.disconnected_peers)
           in
-          let%bind reader, writer = get_socket_reader_writer t peer in
-          let connect () =
-            Rpc.Connection.create reader writer ~connection_state:(fun _ -> ())
-          in
-          let%bind conn_result = collect_errors writer connect in
-          let%bind () = close_connection reader writer in
-          match conn_result with
+          match%bind get_socket_reader_writer t peer with
+          | Ok (reader, writer) -> (
+              let connect () =
+                Rpc.Connection.create reader writer ~connection_state:(fun _ ->
+                    () )
+              in
+              let%bind conn_result = collect_errors writer connect in
+              let%bind () = close_connection reader writer in
+              match conn_result with
+              | Error _ ->
+                  return ()
+              | Ok _ ->
+                  Logger.info t.logger ~module_:__MODULE__ ~location:__LOC__
+                    !"Reconnected to a random disconnected peer: %{sexp: \
+                      Peer.t}"
+                    peer ;
+                  unmark_all_disconnected_peers t )
           | Error _ ->
               return ()
-          | Ok _ ->
-              Logger.info t.logger ~module_:__MODULE__ ~location:__LOC__
-                !"Reconnected to a random disconnected peer: %{sexp: Peer.t}"
-                peer ;
-              unmark_all_disconnected_peers t )
         else return ()
       in
       loop ()
@@ -304,19 +311,23 @@ module Make (Message : Message_intf) : S with type msg := Message.msg = struct
     (* use error collection, close connection strategy of Tcp.with_connection *)
     let call () =
       try_with (fun () ->
-          let%bind reader, writer = get_socket_reader_writer t peer in
-          let run_query () =
-            create_connection_with_menu peer reader writer
-            >>=? fun conn -> dispatch conn query
-          in
-          let result = collect_errors writer run_query in
-          Deferred.any
-            [ (result >>| fun (_ : ('a, exn) Result.t) -> ())
-            ; Reader.close_finished reader
-            ; Writer.close_finished writer ]
-          >>= fun () ->
-          close_connection reader writer
-          >>= fun () -> result >>| function Ok v -> v | Error e -> raise e )
+          match%bind get_socket_reader_writer t peer with
+          | Error exn ->
+              raise exn
+          | Ok (reader, writer) -> (
+              let run_query () =
+                create_connection_with_menu peer reader writer
+                >>=? fun conn -> dispatch conn query
+              in
+              let result = collect_errors writer run_query in
+              Deferred.any
+                [ (result >>| fun (_ : ('a, exn) Result.t) -> ())
+                ; Reader.close_finished reader
+                ; Writer.close_finished writer ]
+              >>= fun () ->
+              close_connection reader writer
+              >>= fun () ->
+              result >>| function Ok v -> v | Error e -> raise e ) )
       >>= function
       | Ok (Ok result) ->
           (* call succeeded, result is valid *)
