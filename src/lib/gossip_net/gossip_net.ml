@@ -253,11 +253,10 @@ module Make (Message : Message_intf) : S with type msg := Message.msg = struct
       @@ `Inet (t.addrs_and_ports.bind_ip, 0)
     in
     let peer_addr = `Inet (peer.Peer.host, peer.communication_port) in
-    try
-      let%map connected_socket = Async.Socket.connect socket peer_addr in
-      let fd = Socket.fd connected_socket in
-      Ok (Reader.create fd, Writer.create fd)
-    with exn -> return @@ Error exn
+    try_with (fun () ->
+        let%map connected_socket = Async.Socket.connect socket peer_addr in
+        let fd = Socket.fd connected_socket in
+        (Reader.create fd, Writer.create fd) )
 
   let close_connection reader writer =
     Writer.close writer ~force_close:(Clock.after (sec 30.))
@@ -311,23 +310,21 @@ module Make (Message : Message_intf) : S with type msg := Message.msg = struct
     (* use error collection, close connection strategy of Tcp.with_connection *)
     let call () =
       try_with (fun () ->
-          match%bind get_socket_reader_writer t peer with
-          | Error exn ->
-              raise exn
-          | Ok (reader, writer) -> (
-              let run_query () =
-                create_connection_with_menu peer reader writer
-                >>=? fun conn -> dispatch conn query
-              in
-              let result = collect_errors writer run_query in
-              Deferred.any
-                [ (result >>| fun (_ : ('a, exn) Result.t) -> ())
-                ; Reader.close_finished reader
-                ; Writer.close_finished writer ]
-              >>= fun () ->
-              close_connection reader writer
-              >>= fun () ->
-              result >>| function Ok v -> v | Error e -> raise e ) )
+          let%bind reader, writer =
+            get_socket_reader_writer t peer >>| Result.ok_exn
+          in
+          let run_query () =
+            create_connection_with_menu peer reader writer
+            >>=? fun conn -> dispatch conn query
+          in
+          let result = collect_errors writer run_query in
+          Deferred.any
+            [ (result >>| fun (_ : ('a, exn) Result.t) -> ())
+            ; Reader.close_finished reader
+            ; Writer.close_finished writer ]
+          >>= fun () ->
+          close_connection reader writer
+          >>= fun () -> result >>| function Ok v -> v | Error e -> raise e )
       >>= function
       | Ok (Ok result) ->
           (* call succeeded, result is valid *)
